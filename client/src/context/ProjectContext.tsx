@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { DBState, Item, Decision, VerdictType, WebSource, IngestItem, ProjectSummary, Priority, Status, Agent, AgentKind, NewProjectDraft, DraftSource, ClarificationTurn } from '../types.js';
 
-type ViewName = 'board' | 'verdicts' | 'memory' | 'impact' | 'author' | 'sources' | 'deprecate' | 'settings' | 'projects';
+type ViewName = 'board' | 'verdicts' | 'runs' | 'reviews' | 'delivery' | 'memory' | 'impact' | 'author' | 'sources' | 'deprecate' | 'settings' | 'projects';
 
 // Phases of the guided New Project takeover (§4.10 → §4.11). 'idle' = normal app.
 type SetupPhase = 'idle' | 'setup' | 'chat';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useTransition } from 'react';
+import React, { useState, useEffect, useTransition, useMemo } from 'react';
 import {
   ProjectProvider,
   useProject
@@ -40,6 +40,22 @@ import {
   ClarificationChat
 } from './components/ClarificationChat.js';
 import {
+  RunsView
+} from './components/RunsView.js';
+import {
+  ReviewsView
+} from './components/ReviewsView.js';
+import {
+  DeliveryView
+} from './components/DeliveryView.js';
+import {
+  RunChip
+} from './components/StatusBadges.js';
+import {
+  buildRuns,
+  buildReviews
+} from './lib/delivery.js';
+import {
   LayoutDashboard,
   Bell,
   MessageSquare,
@@ -58,13 +74,16 @@ import {
   Sparkles,
   Search,
   Check,
+  CheckCircle2,
   ChevronRight,
   Undo2,
   Lock,
   BookmarkPlus,
   AlertTriangle,
   Bot,
-  LogOut
+  LogOut,
+  Cog,
+  Rocket
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
@@ -134,6 +153,17 @@ function DashboardView() {
   const filteredItems = getFilteredItems();
 
   const areas = state ? Array.from(new Set(state.items.map(i => i.area))) : [];
+
+  // Runs/reviews are derived from the board so a card can show its live run status
+  // (spec §4.1: the board doubles as an at-a-glance execution dashboard).
+  const runByItem = useMemo(() => {
+    const runs = buildRuns(state?.items || [], state?.agents || []);
+    return new Map(runs.map(r => [r.itemId, r]));
+  }, [state?.items, state?.agents]);
+  const reviewByItem = useMemo(() => {
+    const reviews = buildReviews(state?.items || [], state?.agents || []);
+    return new Map(reviews.map(r => [r.itemId, r]));
+  }, [state?.items, state?.agents]);
 
   return (
     <div className="space-y-6">
@@ -295,6 +325,18 @@ function DashboardView() {
                           <VerdictBadge type="checking" className="scale-90 origin-left" />
                         </div>
                       )}
+
+                      {/* Run-status chip — appears once a card is agent work in flight (§4.1) */}
+                      {(() => {
+                        const run = runByItem.get(item.id);
+                        if (!run) return null;
+                        const review = reviewByItem.get(item.id);
+                        return (
+                          <div className="mt-2.5">
+                            <RunChip status={run.status} met={review?.metCount} total={review?.totalCount} />
+                          </div>
+                        );
+                      })()}
 
                       <div className="mt-3.5 pt-2 border-t border-stone-100 dark:border-stone-900 flex items-center justify-between text-[10px] text-stone-400 font-medium">
                         <span className="bg-stone-50 dark:bg-stone-900 px-1.5 py-0.5 rounded font-mono uppercase">
@@ -1300,17 +1342,37 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
     return state.items.filter(i => i.verdict && i.verdict.type !== 'net-new').length + state.ingestQueue.length;
   };
 
-  // Nav mapping
-  const navItems: Array<{ view: 'projects' | 'board' | 'verdicts' | 'memory' | 'impact' | 'author' | 'sources' | 'deprecate' | 'settings'; label: string; icon: any; count?: number }> = [
-    { view: 'projects', label: 'Projects', icon: FolderKanban },
-    { view: 'board', label: 'Board', icon: LayoutDashboard },
-    { view: 'verdicts', label: 'Verdicts', icon: Bell, count: getTriageCount() },
-    { view: 'memory', label: 'Memory', icon: MessageSquare },
-    { view: 'impact', label: 'Impact', icon: Network },
-    { view: 'author', label: 'Author', icon: BookOpen },
-    { view: 'sources', label: 'Sources', icon: FolderInput },
-    { view: 'deprecate', label: 'Deprecate', icon: Trash2 },
-    { view: 'settings', label: 'Settings', icon: Settings }
+  // The Reviews queue: agent implementations awaiting requirement validation (§4.13).
+  const getReviewCount = () => {
+    if (!state) return 0;
+    return buildReviews(state.items, state.agents).filter(r => r.overall !== 'all-met').length;
+  };
+
+  // Left nav grouped by lifecycle phase (spec §3): PLAN → BUILD → VERIFY → KNOWLEDGE.
+  type NavView = 'projects' | 'board' | 'verdicts' | 'runs' | 'reviews' | 'delivery' | 'memory' | 'impact' | 'author' | 'sources' | 'deprecate' | 'settings';
+  type NavItem = { view: NavView; label: string; icon: any; count?: number };
+  const navGroups: Array<{ phase: string | null; items: NavItem[] }> = [
+    { phase: null, items: [
+      { view: 'projects', label: 'Projects', icon: FolderKanban },
+    ]},
+    { phase: 'Plan', items: [
+      { view: 'board', label: 'Board', icon: LayoutDashboard },
+      { view: 'verdicts', label: 'Verdicts', icon: Bell, count: getTriageCount() },
+    ]},
+    { phase: 'Build', items: [
+      { view: 'runs', label: 'Runs', icon: Cog },
+    ]},
+    { phase: 'Verify', items: [
+      { view: 'reviews', label: 'Reviews', icon: CheckCircle2, count: getReviewCount() },
+      { view: 'delivery', label: 'Delivery', icon: Rocket },
+    ]},
+    { phase: 'Knowledge', items: [
+      { view: 'memory', label: 'Memory', icon: MessageSquare },
+      { view: 'impact', label: 'Trace', icon: Network },
+      { view: 'author', label: 'Author', icon: BookOpen },
+      { view: 'sources', label: 'Sources', icon: FolderInput },
+      { view: 'deprecate', label: 'Deprecate', icon: Trash2 },
+    ]},
   ];
 
   return (
@@ -1325,33 +1387,53 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
             </span>
             <div>
               <span className="font-sans font-semibold tracking-tight block text-base text-stone-900 dark:text-white leading-none">Nexus</span>
-              <span className="text-[9px] text-stone-400 font-mono block tracking-widest mt-0.5">DECISION MEMORY</span>
+              <span className="text-[9px] text-stone-400 font-mono block tracking-widest mt-0.5">SOFTWARE DELIVERY</span>
             </div>
           </div>
 
-          <nav className="space-y-1">
-            {navItems.map(item => {
-              const Icon = item.icon;
-              const isActive = activeView === item.view;
-
-              return (
-                <button
-                  key={item.view}
-                  onClick={() => { setActiveView(item.view); }}
-                  className={`w-full flex items-center justify-between p-2 rounded-[var(--r-sm)] text-[12.5px] font-medium transition-colors cursor-pointer ${isActive ? 'bg-[var(--accent-bg)] text-[var(--accent)] font-bold' : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-900'}`}
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <Icon className="w-4 h-4 shrink-0" />
-                    <span className="truncate">{item.label}</span>
+          <nav className="space-y-3">
+            {navGroups.map((group, gi) => (
+              <div key={gi} className="space-y-0.5">
+                {/* Quiet phase label — a section header, not clickable (spec §3) */}
+                {group.phase && (
+                  <div className="px-2 pt-1.5 pb-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-stone-400 dark:text-stone-500 select-none">
+                    {group.phase}
                   </div>
-                  {item.count !== undefined && item.count > 0 && (
-                    <span className="bg-red-500 text-white rounded-full text-[9px] font-bold px-1.5 py-0.2 shrink-0">
-                      {item.count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+                )}
+                {group.items.map(item => {
+                  const Icon = item.icon;
+                  const isActive = activeView === item.view;
+                  return (
+                    <button
+                      key={item.view}
+                      onClick={() => { setActiveView(item.view); }}
+                      className={`w-full flex items-center justify-between p-2 rounded-[var(--r-sm)] text-[12.5px] font-medium transition-colors cursor-pointer ${isActive ? 'bg-[var(--accent-bg)] text-[var(--accent)] font-bold' : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-900'}`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </div>
+                      {item.count !== undefined && item.count > 0 && (
+                        <span className="bg-red-500 text-white rounded-full text-[9px] font-bold px-1.5 py-0.2 shrink-0">
+                          {item.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+
+            {/* Settings sits below the phase groups */}
+            <div className="pt-2 mt-2 border-t border-stone-200 dark:border-stone-850">
+              <button
+                onClick={() => setActiveView('settings')}
+                className={`w-full flex items-center gap-2.5 p-2 rounded-[var(--r-sm)] text-[12.5px] font-medium transition-colors cursor-pointer ${activeView === 'settings' ? 'bg-[var(--accent-bg)] text-[var(--accent)] font-bold' : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-900'}`}
+              >
+                <Settings className="w-4 h-4 shrink-0" />
+                <span className="truncate">Settings</span>
+              </button>
+            </div>
           </nav>
         </div>
 
@@ -1413,16 +1495,32 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
               </kbd>
             </button>
 
-            {/* Ingress triage inbox bell indicator */}
+            {/* The product's two triage queues (spec §3): task Verdicts + agent Reviews */}
             <button
               onClick={() => setActiveView('verdicts')}
-              className="p-1 px-2.5 rounded border border-stone-200 dark:border-stone-800 hover:bg-stone-150 text-stone-600 dark:text-stone-300 relative text-xs flex items-center gap-1 cursor-pointer"
-              title="Inbox items"
+              className="p-1 px-2.5 rounded border border-stone-200 dark:border-stone-800 hover:bg-stone-150 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 relative text-xs flex items-center gap-1.5 cursor-pointer"
+              title="Task verdicts — conflicts & duplicates awaiting confirmation"
             >
               <Bell className="w-4 h-4" />
-              <span>Inbox</span>
+              <span className="hidden lg:inline">Verdicts</span>
               {getTriageCount() > 0 && (
-                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" />
+                <span className="ml-0.5 min-w-[16px] text-center bg-red-500 text-white rounded-full text-[9px] font-bold px-1 py-0.2">
+                  {getTriageCount()}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setActiveView('reviews')}
+              className="p-1 px-2.5 rounded border border-stone-200 dark:border-stone-800 hover:bg-stone-150 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 relative text-xs flex items-center gap-1.5 cursor-pointer"
+              title="Reviews — agent implementations awaiting requirement validation"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span className="hidden lg:inline">Reviews</span>
+              {getReviewCount() > 0 && (
+                <span className="ml-0.5 min-w-[16px] text-center bg-[var(--accent)] text-white rounded-full text-[9px] font-bold px-1 py-0.2">
+                  {getReviewCount()}
+                </span>
               )}
             </button>
             
@@ -1457,6 +1555,9 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
               >
                 {activeView === 'board' && <DashboardView />}
                 {activeView === 'verdicts' && <VerdictsView />}
+                {activeView === 'runs' && <RunsView />}
+                {activeView === 'reviews' && <ReviewsView />}
+                {activeView === 'delivery' && <DeliveryView />}
                 {activeView === 'memory' && <AskView />}
                 {activeView === 'impact' && <ImpactGraph />}
                 {activeView === 'author' && <AuthorView />}
