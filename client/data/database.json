@@ -1,0 +1,222 @@
+{
+  "apiConfig": {
+    "provider": "managed",
+    "providerType": "gemini",
+    "apiKey": "",
+    "region": "us-central1",
+    "embeddingsProvider": "gemini",
+    "embeddingsKey": "",
+    "noRetention": true,
+    "isolateTenant": true
+  },
+  "agents": [
+    {
+      "id": "figma-ai",
+      "name": "Figma AI",
+      "kind": "design",
+      "description": "Creates Figma designs and mockups.",
+      "builtin": true
+    },
+    {
+      "id": "github-copilot",
+      "name": "GitHub Copilot",
+      "kind": "code",
+      "description": "Implements and reviews code.",
+      "builtin": true
+    },
+    {
+      "id": "frontend-dev",
+      "name": "Frontend Dev Agent",
+      "kind": "code",
+      "description": "Builds UI and frontend features.",
+      "builtin": true
+    },
+    {
+      "id": "backend-dev",
+      "name": "Backend Dev Agent",
+      "kind": "code",
+      "description": "Builds APIs and backend services.",
+      "builtin": true
+    },
+    {
+      "id": "qa-tester",
+      "name": "QA Tester Agent",
+      "kind": "qa",
+      "description": "Exploratory testing and bug triage.",
+      "builtin": true
+    },
+    {
+      "id": "docs-writer",
+      "name": "Docs Writer Agent",
+      "kind": "docs",
+      "description": "Writes and updates documentation.",
+      "builtin": true
+    },
+    {
+      "id": "unit-test-gen",
+      "name": "Unit Test Generator Agent",
+      "kind": "test",
+      "description": "Generates unit tests for code.",
+      "builtin": true
+    },
+    {
+      "id": "security-compliance",
+      "name": "Security & Compliance Agent",
+      "kind": "security",
+      "description": "Reviews security and compliance.",
+      "builtin": true
+    },
+    {
+      "id": "custom-1783864943131",
+      "name": "TES",
+      "kind": "code",
+      "builtin": false
+    }
+  ],
+  "projects": [
+    {
+      "id": "proj-1783951896600",
+      "name": "AAA",
+      "createdAt": "2026-07-13T14:11:36.600Z",
+      "items": [
+        {
+          "id": 100,
+          "title": "SSSSS",
+          "description": "Proposed backlog card specifications.",
+          "status": "in_progress",
+          "priority": "P2",
+          "assignee": "agent:backend-dev",
+          "area": "auth",
+          "created_at": "2026-07-13T14:12:23.084Z",
+          "source": null,
+          "verdict": {
+            "type": "net-new",
+            "confidence": 100,
+            "message": "Net-new — nothing like this yet",
+            "candidates": []
+          }
+        },
+        {
+          "id": 101,
+          "title": ",hljl;k",
+          "description": "Proposed backlog card specifications.",
+          "status": "done",
+          "priority": "P3",
+          "assignee": "agent:github-copilot",
+          "area": "auth",
+          "created_at": "2026-07-13T15:19:39.002Z",
+          "source": null,
+          "verdict": {
+            "type": "net-new",
+            "confidence": 100,
+            "message": "Net-new — nothing like this yet",
+            "candidates": []
+          }
+        }
+      ],
+      "decisions": [],
+      "sources": [
+        {
+          "id": "src-1783951910082",
+          "name": "Google Sheet",
+          "type": "sheet",
+          "status": "synced",
+          "lastSynced": "just now",
+          "pendingCount": 0
+        },
+        {
+          "id": "src-1783951912074",
+          "name": "Feedback inbox",
+          "type": "email",
+          "status": "synced",
+          "lastSynced": "just now",
+          "pendingCount": 0
+        },
+        {
+          "id": "src-1783951915989",
+          "name": "Meeting transcripts",
+          "type": "transcript",
+          "status": "synced",
+          "lastSynced": "just now",
+          "pendingCount": 0
+        }
+      ],
+      "ingestQueue": [
+        {
+          "id": "ingest-1783951896609",
+          "title": "Add custom database-backed SSO login store",
+          "description": "Setup server encryption algorithms to save and manage client enterprise dashboard credentials directly inside our server databases.",
+          "area": "auth",
+          "priority": "P1",
+          "sourceId": "src-upload",
+          "sourceSnippet": "We should configure custom tables to write encryption credentials direct ... AAA — setup brief",
+          "verdict": {
+            "type": "net-new",
+            "confidence": 100,
+            "message": "Net-new — nothing like this yet",
+            "candidates": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "proj-1783951958048",
+      "name": "BBBB",
+      "createdAt": "2026-07-13T14:12:38.048Z",
+      "items": [],
+      "decisions": [],
+      "sources": [],
+      "ingestQueue": [
+        {
+          "id": "ingest-1783951958059",
+          "title": "Add custom database-backed SSO login store",
+          "description": "Setup server encryption algorithms to save and manage client enterprise dashboard credentials directly inside our server databases.",
+          "area": "auth",
+          "priority": "P1",
+          "sourceId": "src-upload",
+          "sourceSnippet": "We should configure custom tables to write encryption credentials direct ... BBBB — setup brief",
+          "verdict": {
+            "type": "net-new",
+            "confidence": 100,
+            "message": "Net-new — nothing like this yet",
+            "candidates": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "proj-1786109960853",
+      "name": "hfggh",
+      "createdAt": "2026-08-07T13:39:20.853Z",
+      "items": [],
+      "decisions": [],
+      "sources": [
+        {
+          "id": "src-1786112134479",
+          "name": "Jira tickets",
+          "type": "ticket",
+          "status": "synced",
+          "lastSynced": "just now",
+          "pendingCount": 0
+        }
+      ],
+      "ingestQueue": [
+        {
+          "id": "ingest-1786109961204",
+          "title": "Add custom database-backed SSO login store",
+          "description": "Setup server encryption algorithms to save and manage client enterprise dashboard credentials directly inside our server databases.",
+          "area": "auth",
+          "priority": "P1",
+          "sourceId": "src-upload",
+          "sourceSnippet": "We should configure custom tables to write encryption credentials direct ... hfggh — setup brief",
+          "verdict": {
+            "type": "net-new",
+            "confidence": 100,
+            "message": "Net-new — nothing like this yet",
+            "candidates": []
+          }
+        }
+      ]
+    }
+  ]
+}

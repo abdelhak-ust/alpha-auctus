@@ -1,0 +1,6 @@
+{
+  "name": "Decision Memory Layer",
+  "description": "A frictionless, high-fidelity development planning board that automatically detects architectural conflicts, duplicates, and impact dependencies using past decision history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
