@@ -29,6 +29,9 @@ export const CommandBar: React.FC<CommandBarProps> = ({ onClose }) => {
       return [
         { type: 'nav', label: 'Go to Kanban Board', action: () => { setActiveView('board'); onClose(); }, shortcut: 'g b' },
         { type: 'nav', label: 'Go to Verdicts Inbox', action: () => { setActiveView('verdicts'); onClose(); }, shortcut: 'g v' },
+        { type: 'nav', label: 'Go to Runs (agent execution)', action: () => { setActiveView('runs'); onClose(); }, shortcut: 'g u' },
+        { type: 'nav', label: 'Go to Reviews (requirement validation)', action: () => { setActiveView('reviews'); onClose(); }, shortcut: 'g e' },
+        { type: 'nav', label: 'Go to Delivery (PR & deploy)', action: () => { setActiveView('delivery'); onClose(); }, shortcut: 'g y' },
         { type: 'nav', label: 'Go to Memory (Ask Questions)', action: () => { setActiveView('memory'); onClose(); }, shortcut: 'g m' },
         { type: 'nav', label: 'Go to Impact Graph', action: () => { setActiveView('impact'); onClose(); }, shortcut: 'g i' },
         { type: 'nav', label: 'Go to BRD/Spec Authoring', action: () => { setActiveView('author'); onClose(); }, shortcut: 'g a' },
