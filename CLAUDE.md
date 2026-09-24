@@ -35,7 +35,12 @@ that's a gap to flag, not a blank to fill from taste.
   local (Postgres+pgvector, filesystem blobs, arq) and deployed environments go GCP-native
   (Cloud SQL, Cloud Storage, Cloud Tasks, Secret Manager, Cloud Run) — see §3 of the plan.
 - `ui_ux_design.md`, `architecture.md` — the two source specs (read first, above).
-- `.claude/plans/we-want-nexus-to-sorted-shell.md` — the living build plan.
+- `.claude/plans/we-want-nexus-to-sorted-shell.md` — the living **master** build plan (the
+  whole-platform roadmap — doesn't move).
+- `plans/` — one file per **feature**, written by `nexus-plan` right before it's built. Finer
+  grain than the master plan; see `plans/README.md` for the convention.
+- `IMPLEMENTATION_LOG.md` — dated record of what's actually been built and verified, newest
+  first. Written by `nexus-log` after a feature passes `nexus-verify`.
 
 ## Running it locally
 - Frontend: `cd client && npm run dev` (or the `nexus-client` preview config in
@@ -65,3 +70,21 @@ that's a gap to flag, not a blank to fill from taste.
   standing instruction says (it has changed mid-project — don't hardcode a line here).
 - Keep the plan file in sync: when a phase's status changes (mock → real), update its row in
   the phased-plan table.
+
+## Workflow — the project skills, and when to use them
+
+One feature at a time, grounded in spec, with a visible record of what happened:
+
+1. **`nexus-plan`** before starting anything non-trivial — grounds it in spec, checks it won't
+   break existing consumers, confirms it's the right phase/placement, and saves the plan to
+   `plans/<slug>.md`. Refuses to start a second feature while one is still `active`.
+2. **`nexus-spec`** any time a requirement is unclear mid-implementation — don't improvise.
+3. **`nexus-frontend-standards`** / **`nexus-backend-standards`** while writing code in
+   `client/` / `backend/` — this project's specific conventions (reuse, the API-contract rule,
+   design tokens, async/AI-adapter discipline, error handling, tests).
+4. **`nexus-new-phase`** specifically when starting a new backend phase's scaffolding
+   (models/schemas/routes/tests skeleton).
+5. **`nexus-verify`** before considering any change done.
+6. **`nexus-log`** after `nexus-verify` passes — records the outcome in
+   `IMPLEMENTATION_LOG.md` and flips the matching `plans/` file to `done`, which is what
+   allows the next `nexus-plan` to proceed.
