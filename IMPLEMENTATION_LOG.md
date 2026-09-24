@@ -70,7 +70,7 @@ pydantic `UnsupportedFieldAttributeWarning` on `SomeModel | None` response field
 flages 9 pre-existing transitive vulnerabilities in the vite/express/tailwind toolchain,
 unrelated to this change — noted, not fixed here.
 
-**Commit:** _pending — see the next commit in `git log`._
+**Commit:** `f24894d`
 
 ---
 
