@@ -36,7 +36,7 @@ elsewhere.
 
 **Open:** none — this entry is itself the first real use of `nexus-log`.
 
-**Commit:** `6582610`
+**Commit:** `1e3dd66`
 
 ## 2026-09-24 — Foundations: CLAUDE.md, project skills, GCP/Vertex AI backend
 
