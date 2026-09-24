@@ -1,0 +1,67 @@
+# Nexus (aka "Alpha Auctus" internal build)
+
+AI-native software delivery platform, built as an **internal tool**. Turns raw project
+intent into provenance-linked task contracts, executes them via AI agents, and proves
+completion with per-requirement evidence — not just "the tests pass."
+
+**Read first, in order:**
+1. `/ui_ux_design.md` — the UI/UX spec. Screens, flows, states, keyboard model, design
+   tokens. Source of truth for anything user-facing.
+2. `/architecture.md` — the plan/memory-half system architecture (ingestion, conflict/dedup
+   engine, data model).
+3. The active build plan at `.claude/plans/we-want-nexus-to-sorted-shell.md` — feature
+   catalog, user stories, phased build order, resolved decisions, and what's actually been
+   built vs. still a mock.
+
+Don't improvise product behavior — if a screen, flow, or copy isn't covered by (1) or (2),
+that's a gap to flag, not a blank to fill from taste.
+
+## Non-negotiables (violate these and the product breaks its own thesis)
+- **Cite or stay silent.** Every AI claim (verdict, answer, authored doc, requirement-
+  coverage row) shows its source. No citation ⇒ say so, never assert.
+- **Human is the final approver.** AI never merges, deploys, or closes a requirement on its
+  own (autonomy capped at L0–L1 for this build — see the plan's resolved decisions).
+- **Never silently miss, never cry wolf.** Low-confidence findings surface tinted as
+  "please review," excluded from bulk actions — never auto-resolved, never dropped.
+- **Ranked candidates, not single assertions.** Verdicts and coverage rows show ranked
+  candidates for human confirmation.
+
+## Repo layout
+- `client/` — React 19 + TypeScript + Vite + Tailwind v4 SPA. Every screen in the spec is
+  built here (`client/src/App.tsx`, `client/src/components/`). Currently talks to
+  `client/server.ts` (an Express + JSON-file mock) — being replaced by `backend/`.
+- `backend/` — Python 3.13 + FastAPI, built phase by phase per the plan. Poetry-managed.
+  AI (generation + embeddings) always goes through **Vertex AI**; local dev otherwise stays
+  local (Postgres+pgvector, filesystem blobs, arq) and deployed environments go GCP-native
+  (Cloud SQL, Cloud Storage, Cloud Tasks, Secret Manager, Cloud Run) — see §3 of the plan.
+- `ui_ux_design.md`, `architecture.md` — the two source specs (read first, above).
+- `.claude/plans/we-want-nexus-to-sorted-shell.md` — the living build plan.
+
+## Running it locally
+- Frontend: `cd client && npm run dev` (or the `nexus-client` preview config in
+  `.claude/launch.json`) — port 3000.
+- Backend: `cd backend && poetry install && poetry run uvicorn app.main:app --reload --port
+  8000`. Needs local Postgres 16 with the `nexus_dev` database and the `vector` extension
+  (see `backend/README.md` — pgvector was built from source on this machine since the
+  Homebrew bottle only targets pg17/18).
+- Vertex AI needs `gcloud auth application-default login` and a configured GCP project — see
+  the plan's §0.3 checklist.
+
+## Verifying a change
+- Frontend: `cd client && npx tsc --noEmit` must be clean; drive the change in the browser
+  preview (never run dev servers via bash — use the preview tools).
+- Backend: `cd backend && poetry run pytest && poetry run ruff check .`
+- Every phase in the plan has its own "Verification" subsection — follow it, don't invent a
+  different check.
+
+## Conventions
+- **The API contract lives in `client/src/types.ts`.** New backend endpoints return shapes
+  that match those types exactly, so the already-built frontend needs no rewrite (the plan's
+  "Key reuse" principle).
+- New backend packages under `backend/app/` follow the existing pattern: an `__init__.py`
+  docstring naming which plan phase fills it in, routes registered in `main.py`, tests via
+  `pytest-asyncio` + `httpx.ASGITransport` (see `backend/tests/test_health.py`).
+- Active branch: `ui_v2`. For commit/PR attribution, follow whatever the current session's
+  standing instruction says (it has changed mid-project — don't hardcode a line here).
+- Keep the plan file in sync: when a phase's status changes (mock → real), update its row in
+  the phased-plan table.

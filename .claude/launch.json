@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nexus-client",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd client && npm run dev"],
+      "port": 3000
+    },
+    {
+      "name": "nexus-backend",
+      "runtimeExecutable": "/Users/abdelhak/Library/Caches/pypoetry/virtualenvs/nexus-backend-KB8MlgXK-py3.13/bin/uvicorn",
+      "runtimeArgs": [
+        "app.main:app",
+        "--reload",
+        "--port",
+        "8000",
+        "--app-dir",
+        "/Volumes/NEOVITA/Personal Projects/unicorn/backend"
+      ],
+      "port": 8000,
+      "url": "http://localhost:8000"
+    }
+  ]
+}

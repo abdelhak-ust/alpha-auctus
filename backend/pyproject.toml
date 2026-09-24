@@ -1,0 +1,62 @@
+[tool.poetry]
+name = "nexus-backend"
+version = "0.1.0"
+description = "Nexus backend — AI-native software delivery platform. See /ui_ux_design.md and /architecture.md for product spec, and the plan at .claude/plans for the phased build."
+authors = ["Abdelhak Mokri <abdelhakmokri@gmail.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.13"
+# Web framework
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
+python-multipart = "^0.0.12"
+websockets = "^13.1"
+# Config / validation
+pydantic = "^2.9.0"
+pydantic-settings = "^2.6.0"
+# Database (P0: Postgres + pgvector)
+sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
+asyncpg = "^0.30.0"
+alembic = "^1.14.0"
+pgvector = "^0.3.6"
+# Background jobs — arq/Redis for local dev only; Cloud Tasks is used when deployed
+# (see the plan §0.3 — this stays local so day-to-day dev never round-trips GCP).
+arq = "^0.26.1"
+redis = "^5.2.0"
+# AI provider adapter — Vertex AI only (generation via AnthropicVertex, embeddings via
+# Vertex's text-embedding models), for both local dev and deployed. No direct Anthropic API
+# key / Voyage — see the plan §0.3 and §5.
+anthropic = { extras = ["vertex"], version = "^0.39.0" }
+google-cloud-aiplatform = "^1.71.0"
+# GCP services used only when deployed (local dev stays on disk/local Postgres — plan §0.3)
+google-cloud-storage = "^2.18.0"
+google-cloud-tasks = "^2.16.0"
+google-cloud-secret-manager = "^2.20.0"
+# Outbound HTTP (GitHub App calls)
+httpx = "^0.27.2"
+# PDF parsing (P6 ingestion — plan §5)
+pypdf = "^5.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+pytest-asyncio = "^0.24.0"
+ruff = "^0.7.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's `Depends(...)` as a default argument is the idiomatic DI pattern, not the
+# mutable-default-argument bug this rule is meant to catch — every route will trigger it.
+ignore = ["B008"]

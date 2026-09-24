@@ -1,0 +1,6 @@
+[virtualenvs]
+# NOT in-project: the repo lives on an ExFAT external volume (no symlink /
+# xattr support), which breaks Python venv creation. Poetry keeps the
+# virtualenv in its default cache dir on the local disk instead; the venv
+# name below is still derived from this project so `poetry env info` finds it.
+in-project = false
