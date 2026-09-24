@@ -36,19 +36,21 @@ class Settings(BaseSettings):
     # BYO-key-to-the-raw-Anthropic-API posture.
     gcp_project_id: str = Field(
         default="",
-        description="GCP project id hosting Vertex AI. Required for any AI call to work.",
+        description="GCP project id hosting Vertex AI. Required for any AI call to work. "
+        "Set in backend/.env (gitignored), not here — this stays blank so a real project id "
+        "never lands in a committed file.",
     )
     gcp_region: str = Field(
         default="us-east5",
         description="Vertex AI region — must be one where the needed Claude models are"
-        " enabled in Model Garden for gcp_project_id.",
+        " enabled in Model Garden for gcp_project_id. Set in backend/.env.",
     )
     vertex_model: str = Field(
         default="claude-sonnet-4-5@20250929",
         description="Vertex AI model id for Claude generation calls (extraction, vision "
         "parsing, etc). Must match a model actually enabled in Model Garden for "
-        "gcp_project_id/gcp_region — confirm and adjust once the account-level GCP setup "
-        "(plan §0.3) is done; this default is a placeholder, not a confirmed value.",
+        "gcp_project_id/gcp_region — set in backend/.env once confirmed; this default is a "
+        "placeholder, not a confirmed value.",
     )
 
     # CORS — the existing client dev server (Vite) runs on :3000
