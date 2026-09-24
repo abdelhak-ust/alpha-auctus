@@ -1,9 +1,13 @@
 """The actual Vertex AI wiring behind app.ai's adapter interface.
 
-Two capabilities, both authenticated via Application Default Credentials (no API key):
-- `get_client()` — an `AnthropicVertex` client for generation (extraction, classification,
-  authoring, validation — used by contracts/, engine/, validate/, ingest/).
+Two capabilities, both authenticated via Application Default Credentials (no API key), both
+async per nexus-backend-standards ("async everywhere" — a sync call here would stall every
+other request on the event loop, not just this one):
+- `get_client()` — an `AsyncAnthropicVertex` client for generation (extraction,
+  classification, authoring, validation — used by contracts/, engine/, validate/, ingest/).
 - `embed_texts()` — Vertex AI text embeddings for indexing (used by ingest/ P6, engine/ P5).
+  The `vertexai` SDK has no async embeddings API, so the sync call runs in a worker thread
+  (`anyio.to_thread`) rather than blocking the loop directly.
 
 Both raise a clear, actionable `VertexNotConfigured` error rather than a confusing SDK
 traceback when `gcp_project_id` isn't set — matching the product's own "Error: inline, not
@@ -12,7 +16,8 @@ modal — problem + cause + fix" convention (ui_ux_design.md §7).
 
 from functools import lru_cache
 
-from anthropic import AnthropicVertex
+import anyio
+from anthropic import AsyncAnthropicVertex
 
 from app.config import get_settings
 
@@ -37,13 +42,13 @@ def _require_project() -> tuple[str, str]:
 
 
 @lru_cache
-def get_client() -> AnthropicVertex:
-    """Cached AnthropicVertex client for Claude generation calls."""
+def get_client() -> AsyncAnthropicVertex:
+    """Cached AsyncAnthropicVertex client for Claude generation calls."""
     project_id, region = _require_project()
-    return AnthropicVertex(project_id=project_id, region=region)
+    return AsyncAnthropicVertex(project_id=project_id, region=region)
 
 
-def embed_texts(texts: list[str], model: str = "text-embedding-005") -> list[list[float]]:
+async def embed_texts(texts: list[str], model: str = "text-embedding-005") -> list[list[float]]:
     """Embed a batch of texts via Vertex AI, returning one vector per input text.
 
     Used by the ingestion pipeline (plan §5, step 5 "index it") for chunk and candidate
@@ -51,12 +56,15 @@ def embed_texts(texts: list[str], model: str = "text-embedding-005") -> list[lis
     """
     project_id, region = _require_project()
 
-    # Imported lazily: vertexai.init() is process-global, so this only runs (and only
-    # requires the dependency to be importable) when embeddings are actually used.
-    import vertexai
-    from vertexai.language_models import TextEmbeddingModel
+    def _sync_embed() -> list[list[float]]:
+        # Imported lazily: vertexai.init() is process-global, so this only runs (and only
+        # requires the dependency to be importable) when embeddings are actually used.
+        import vertexai
+        from vertexai.language_models import TextEmbeddingModel
 
-    vertexai.init(project=project_id, location=region)
-    embedding_model = TextEmbeddingModel.from_pretrained(model)
-    embeddings = embedding_model.get_embeddings(texts)
-    return [e.values for e in embeddings]
+        vertexai.init(project=project_id, location=region)
+        embedding_model = TextEmbeddingModel.from_pretrained(model)
+        embeddings = embedding_model.get_embeddings(texts)
+        return [e.values for e in embeddings]
+
+    return await anyio.to_thread.run_sync(_sync_embed)

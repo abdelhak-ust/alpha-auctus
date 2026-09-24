@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { DBState, Item, Decision, VerdictDetail, IngestItem, WebSource, Priority, Status, Agent } from './src/types.js';
@@ -9,6 +10,15 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// The real ingestion pipeline (parse -> chunk -> extract -> embed -> provenance) lives in the
+// Python backend (backend/app/ingest/) — see plans/ingestion.md "Placement". This process
+// forwards its ingestion-specific handlers there and merges the result into its own store,
+// which is still what /api/state and the rest of the app read from; every other /api/* route
+// (items, decisions, ask, author, ...) is untouched, per the route-by-route cutover pattern
+// plans/ingestion.md establishes for later phases too.
+const BACKEND_URL = process.env.NEXUS_BACKEND_URL || 'http://localhost:8000';
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIR, 'database.json');
@@ -990,100 +1000,89 @@ app.post('/api/deprecate', (req, res) => {
 });
 
 // Sources review pipeline
+// Real pipeline (parse/chunk/extract/embed/provenance) — proxied to the Python backend,
+// which returns the extracted candidates already IngestItem-shaped. This process still owns
+// proj.ingestQueue (nothing has migrated items/decisions/projects to the backend yet), so it
+// merges the result in, matching exactly what the old inline handler used to do with its own
+// mock-extracted items. See plans/ingestion.md "Placement" for why this is a merge, not a
+// dumb relay: /api/state still reads from this process's store.
+async function forwardToIngestionBackend(path: string, init: RequestInit) {
+  const response = await fetch(`${BACKEND_URL}${path}`, init);
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = (body && (body as any).detail) || response.statusText;
+    throw new Error(`Ingestion backend ${path} returned ${response.status}: ${detail}`);
+  }
+  return body;
+}
+
+function ingestionUnavailableResponse(res: express.Response, error: unknown) {
+  console.error('Ingestion backend unreachable:', error);
+  return res.status(502).json({
+    error: "Couldn't reach the ingestion backend. Is `backend/` running (see backend/README.md)?",
+    detail: error instanceof Error ? error.message : String(error)
+  });
+}
+
 app.post('/api/sources/upload', async (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
   const { fileName, fileContent } = req.body;
-  const client = getGeminiClient();
-
-  const buildMockExtracted = (): IngestItem => {
-    const title = "Add custom database-backed SSO login store";
-    const description = "Setup server encryption algorithms to save and manage client enterprise dashboard credentials directly inside our server databases.";
-    return {
-      id: "ingest-" + Date.now(),
-      title,
-      description,
-      area: "auth",
-      priority: "P1",
-      sourceId: "src-upload",
-      sourceSnippet: `We should configure custom tables to write encryption credentials direct ... ${fileName || "Meeting Transcript"}`,
-      verdict: mockAnalysis(proj, title, description)
-    };
-  };
-
-  if (!client) {
-    const mockExtracted = [buildMockExtracted()];
-    proj.ingestQueue.push(...mockExtracted);
-    saveStore();
-    return res.json({ success: true, count: mockExtracted.length, items: mockExtracted });
-  }
 
   try {
-    const prompt = `
-Parse the following text from an uploaded planning document/meeting transcript. Identify one logical feature proposal, backlog item, or requirement.
-Output a JSON array representing the extracted backlog items.
-
-Source File Content:
-"${fileContent || "Develop custom internal password hashes and bypass external portals directly."}"
-
-Generate a single JSON object in the array with properties:
-{
-  "title": "<short descriptive title>",
-  "description": "<detailed requirement description>",
-  "area": "auth" | "reporting" | "general",
-  "priority": "P1" | "P2" | "P3"
-}
-`;
-
-    const response = await client.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json'
-      }
+    const result = await forwardToIngestionBackend('/api/sources/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileName, fileContent, projectId: proj.id })
     });
-
-    const parsed = JSON.parse(response.text || '[]');
-    const results: IngestItem[] = [];
-
-    const itemsToProcess = Array.isArray(parsed) ? parsed : [parsed];
-
-    for (const rawItem of itemsToProcess) {
-      if (rawItem && rawItem.title) {
-        // Run alignment verdict against local project state
-        const analysis = await performVerdictAnalysis(proj, rawItem.title, rawItem.description || '');
-        results.push({
-          id: "ingest-" + Math.floor(Math.random() * 100000),
-          title: rawItem.title,
-          description: rawItem.description || '',
-          area: rawItem.area || 'general',
-          priority: rawItem.priority || 'P2',
-          sourceId: 'src-upload',
-          sourceSnippet: fileContent ? fileContent.slice(0, 150) + "..." : "Uploaded document content excerpt",
-          verdict: analysis
-        });
-      }
-    }
-
-    if (results.length === 0) {
-      results.push(buildMockExtracted());
-    }
-
-    proj.ingestQueue.push(...results);
+    const items = (result.items || []) as IngestItem[];
+    proj.ingestQueue.push(...items);
     saveStore();
-    res.json({ success: true, count: results.length, items: results });
+    res.json({ success: true, count: items.length, items });
   } catch (error) {
-    console.error("Failed to parse document via AI, pushing mockup item:", error);
-    const mockExtracted = [buildMockExtracted()];
-    proj.ingestQueue.push(...mockExtracted);
+    ingestionUnavailableResponse(res, error);
+  }
+});
+
+// New this pass (plans/ingestion.md § API surface) — PDF/image uploads. No UI triggers this
+// yet (NewProjectSetup's Files/Images zones still only read text client-side), but the path
+// is real and reachable now that the backend can actually parse PDFs/images.
+app.post('/api/sources/upload-file', upload.single('file'), async (req, res) => {
+  const proj = resolveProject(req);
+  if (!proj) return res.status(404).json({ error: "Project not found" });
+  if (!req.file) return res.status(400).json({ error: "No file uploaded (expected field 'file')" });
+
+  try {
+    const form = new FormData();
+    form.append('file', new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname);
+
+    const result = await forwardToIngestionBackend(
+      `/api/sources/upload-file?project_id=${encodeURIComponent(proj.id)}`,
+      { method: 'POST', body: form }
+    );
+    const items = (result.items || []) as IngestItem[];
+    proj.ingestQueue.push(...items);
     saveStore();
-    res.json({ success: true, count: mockExtracted.length, items: mockExtracted });
+    res.json({ success: true, count: items.length, items });
+  } catch (error) {
+    ingestionUnavailableResponse(res, error);
+  }
+});
+
+app.get('/api/sources/:id/status', async (req, res) => {
+  try {
+    const result = await forwardToIngestionBackend(`/api/sources/${encodeURIComponent(req.params.id)}/status`, {
+      method: 'GET'
+    });
+    res.json(result);
+  } catch (error) {
+    ingestionUnavailableResponse(res, error);
   }
 });
 
 // Resolve Ingest Queue elements (Add to Board or skip)
-app.post('/api/ingest/resolve', (req, res) => {
+app.post('/api/ingest/resolve', async (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
@@ -1094,33 +1093,40 @@ app.post('/api/ingest/resolve', (req, res) => {
     return res.status(404).json({ error: "Item not found in review queue" });
   }
 
-  const ingItem = proj.ingestQueue[index];
+  try {
+    const result = await forwardToIngestionBackend('/api/ingest/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, action, projectId: proj.id })
+    });
 
-  if (action === 'approve') {
-    // Migrate to items list!
-    const newId = proj.items.length > 0 ? Math.max(...proj.items.map(i => i.id)) + 1 : 100;
-    const newItem: Item = {
-      id: newId,
-      title: ingItem.title,
-      description: ingItem.description,
-      status: 'inbox',
-      priority: ingItem.priority,
-      assignee: 'AM',
-      area: ingItem.area,
-      created_at: new Date().toISOString(),
-      source: {
-        type: 'upload',
-        name: 'Ingestion Pipeline',
-        snippet: ingItem.sourceSnippet
-      },
-      verdict: ingItem.verdict
-    };
-    proj.items.push(newItem);
+    if (action === 'approve' && result.item) {
+      const newId = proj.items.length > 0 ? Math.max(...proj.items.map(i => i.id)) + 1 : 100;
+      const newItem: Item = {
+        id: newId,
+        title: result.item.title,
+        description: result.item.description,
+        status: 'inbox',
+        priority: result.item.priority,
+        assignee: 'AM',
+        area: result.item.area,
+        created_at: new Date().toISOString(),
+        source: {
+          type: 'upload',
+          name: 'Ingestion Pipeline',
+          snippet: result.item.sourceSnippet
+        },
+        verdict: proj.ingestQueue[index].verdict
+      };
+      proj.items.push(newItem);
+    }
+
+    proj.ingestQueue.splice(index, 1);
+    saveStore();
+    res.json({ success: true });
+  } catch (error) {
+    ingestionUnavailableResponse(res, error);
   }
-
-  proj.ingestQueue.splice(index, 1);
-  saveStore();
-  res.json({ success: true });
 });
 
 // Start server containing Vite configuration OR hosting assets directly

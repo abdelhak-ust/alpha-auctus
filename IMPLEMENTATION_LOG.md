@@ -8,6 +8,72 @@ phase is implemented and passes `nexus-verify` — newest entry on top.
 
 ---
 
+## 2026-09-24 — Ingestion pipeline (P6), backend + frontend
+
+**What:** The real architecture.md pipeline (parse → chunk → extract → embed → provenance),
+replacing `client/server.ts`'s single-shot Gemini mock, per `plans/ingestion.md` (now
+`status: done`). Backend: 5 new models (`Source`, `Chunk`, `Entity`, `DecisionRecord`,
+`IngestCandidate`) + migration; `app/ingest/` (mime-aware parser — text/md/csv/PDF/images via
+Claude vision; paragraph-packing token-aware chunker; forced-tool-call extractor with a
+hallucination guard that drops any candidate whose citation isn't a literal substring of its
+source chunk; a ported deterministic provisional verdict, calling Node's existing `/api/state`
+since items/decisions haven't migrated off the JSON store yet); 4 API routes
+(`/api/sources/upload`, `/api/sources/upload-file`, `/api/sources/{id}/status`,
+`/api/ingest/resolve`). Frontend: `client/server.ts`'s 4 ingestion handlers now proxy to the
+backend and merge the result into its own store (added `multer` for the new binary-upload
+path) — the response contract the existing UI already expects is unchanged.
+
+**Design refinement made during implementation (differs from the plan's original sketch):**
+the plan assumed Node could be a dumb proxy; discovered Node's JSON store is still what
+`/api/state` reads, so a background-task design would leave new candidates invisible. Fixed by
+running the pipeline synchronously in the request (matching today's contract exactly, no
+queue needed this pass) and having Node merge the returned candidates into its own
+`ingestQueue`/`items` — see `plans/ingestion.md`'s pipeline.py docstring for the full
+rationale.
+
+**Bugs found and fixed along the way** (each caught by actually running things, not just
+reading code): the chunker's `TARGET_TOKENS` flush path never reset `group_start`, which would
+crash on any input needing 3+ chunks — caught by a real char-offset unit test, not inspection.
+Alembic autogenerate referenced `pgvector.sqlalchemy.vector.VECTOR` without importing it
+(`NameError` at migration time). The `AnthropicVertex` client from the foundations pass was
+the *sync* SDK class, contradicting this project's own "async everywhere" rule — swapped for
+`AsyncAnthropicVertex` (and `embed_texts` now runs its still-sync Vertex SDK call in a worker
+thread). A stray AppleDouble sidecar file (`._<name>.py`, this machine's recurring ExFAT-volume
+quirk) was being picked up by Alembic's directory scan as a fake migration
+(`SyntaxError: null bytes`). A module-level async DB engine shared across pytest's per-test
+event loops caused a real (not flaky-in-a-good-way) `RuntimeError: Future attached to a
+different loop` on the 2nd+ DB-touching test — fixed with an autouse `engine.dispose()`
+fixture, not by fighting pytest-asyncio's loop-scope config.
+
+**Files:** `backend/app/models/{source,entity,decision_record,ingest_candidate}.py` (new),
+`backend/migrations/versions/3e6a80f4bb8f_*.py` (new); `backend/app/ingest/{parse,chunk,extract,
+verdict,pipeline}.py` (new); `backend/app/api/routes/ingestion.py` (new);
+`backend/app/schemas/ingestion.py` (new); `backend/app/ai/vertex.py` (sync→async client);
+`backend/app/config.py` (+`vertex_model`, `+node_server_url`); `backend/app/main.py` (router +
+duplicate-operation-id fix); `backend/tests/conftest.py` (new) +
+`test_ingest_{chunk,parse,extract,routes}.py` (new, 19 tests); `client/server.ts` (4 handlers
+now proxy+merge); `client/package.json` (+`multer`).
+
+**Verified:** `poetry run pytest` 23/23, `ruff check` clean, client `tsc --noEmit` clean. Full
+request chain verified live with both servers actually running: upload → Node → Python → real
+parse/chunk → correctly blocked at the embed step by `VertexNotConfigured` (expected — GCP
+account-level setup is still the user's open item, not a code defect); confirmed zero partial
+rows left in Postgres (clean transaction rollback) and `ingestQueue` uncorrupted after the
+failed attempt. Resolve's 404 path verified through the full chain too.
+
+**Open:** the account-level GCP steps (project id/region, Model Garden access, `gcloud auth
+application-default login`) are still the user's to do — see the master plan §0.3. Once set,
+the AI-dependent checks in `plans/ingestion.md`'s Verification section (real extraction
+accuracy, embeddings, the full browser walkthrough) should be run for the first time. A
+pydantic `UnsupportedFieldAttributeWarning` on `SomeModel | None` response fields is cosmetic
+(verified harmless; documented in `app/schemas/ingestion.py`, not chased further). `npm audit`
+flages 9 pre-existing transitive vulnerabilities in the vite/express/tailwind toolchain,
+unrelated to this change — noted, not fixed here.
+
+**Commit:** _pending — see the next commit in `git log`._
+
+---
+
 ## 2026-09-24 — Dev-standards, planning, and progress-tracking skills
 
 **What:** Four more project skills, closing the gaps from the previous entry's foundations

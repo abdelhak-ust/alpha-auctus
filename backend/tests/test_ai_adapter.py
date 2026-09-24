@@ -25,6 +25,6 @@ def test_get_client_without_project_raises_actionable_error():
         get_client()
 
 
-def test_embed_texts_without_project_raises_actionable_error():
+async def test_embed_texts_without_project_raises_actionable_error():
     with pytest.raises(VertexNotConfigured, match="GCP_PROJECT_ID"):
-        embed_texts(["hello"])
+        await embed_texts(["hello"])

@@ -1,9 +1,9 @@
 ---
 feature: Real ingestion pipeline (parse → chunk → extract → embed → provenance)
 phase: P6
-status: active
+status: done
 created: 2026-09-24
-completed:
+completed: 2026-09-24
 ---
 
 # Real ingestion pipeline
@@ -192,3 +192,18 @@ deployed, per the master plan §0.3's local-fast/cloud-native-deployed split.
 - **End-to-end (browser):** upload via the existing Sources screen → candidate appears in the
   review queue within seconds → approve → appears on the Board with a real citation in the
   Drawer's Citations tab.
+
+---
+
+## Completion note (2026-09-24)
+
+Implemented backend + frontend per the plan above — models, migration, `ingest/` pipeline
+(parse/chunk/extract/embed/verdict), the 4 API routes, and the `client/server.ts` bridge.
+23/23 backend tests pass, `ruff` clean, client `tsc --noEmit` clean. Full request chain
+verified live (both servers running): upload → Node → Python → real parse/chunk → correctly
+blocked at the embed step by `VertexNotConfigured` (GCP account-level setup still pending —
+not a code defect; confirmed no partial rows were left in Postgres, confirming the
+transaction rolled back cleanly). The AI-dependent unit/integration checks in this file's
+Verification section (extraction accuracy, embeddings, the full browser walkthrough) still
+need a configured `GCP_PROJECT_ID` to run for real — everything else is done. Full details:
+`IMPLEMENTATION_LOG.md`'s 2026-09-24 "Ingestion pipeline" entry.

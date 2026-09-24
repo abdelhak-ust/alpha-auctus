@@ -43,9 +43,22 @@ class Settings(BaseSettings):
         description="Vertex AI region — must be one where the needed Claude models are"
         " enabled in Model Garden for gcp_project_id.",
     )
+    vertex_model: str = Field(
+        default="claude-sonnet-4-5@20250929",
+        description="Vertex AI model id for Claude generation calls (extraction, vision "
+        "parsing, etc). Must match a model actually enabled in Model Garden for "
+        "gcp_project_id/gcp_region — confirm and adjust once the account-level GCP setup "
+        "(plan §0.3) is done; this default is a placeholder, not a confirmed value.",
+    )
 
     # CORS — the existing client dev server (Vite) runs on :3000
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+
+    # The existing Node/Express server (client/server.ts) still owns items/decisions/projects
+    # (JSON-file store) — nothing has migrated those yet. Ingestion's provisional verdict
+    # check (plans/ingestion.md "Conflict-check coupling") reads a project's current
+    # items/decisions from Node's own /api/state, rather than duplicating that store here.
+    node_server_url: str = Field(default="http://localhost:3000")
 
 
 @lru_cache
