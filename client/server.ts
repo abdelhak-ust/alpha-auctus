@@ -1,13 +1,16 @@
 import express from 'express';
 import path from 'path';
-import fs from 'fs';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
-import { DBState, Item, Decision, VerdictDetail, IngestItem, WebSource, Priority, Status, Agent } from './src/types.js';
+import { DBState, VerdictDetail, IngestItem, WebSource } from './src/types.js';
+import { bootstrap } from './db/import-json.js';
+import { openDatabase } from './db/index.js';
+import { createRepo } from './db/repo.js';
+import type { ProjectRecord } from './db/types.js';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -20,308 +23,28 @@ app.use(express.json());
 const BACKEND_URL = process.env.NEXUS_BACKEND_URL || 'http://localhost:8000';
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
-const DB_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DB_DIR, 'database.json');
+// The board data (projects, items, decisions, sources, ingest queue, agents, AI settings) lives
+// in SQLite — see client/db/ and plans/node-sqlite-store.md. On first run it is populated from the
+// legacy client/data/database.json (or the built-in seed); that file is never written again.
+const db = openDatabase();
+const repo = createRepo(db);
+bootstrap(repo, path.join(process.cwd(), 'data', 'database.json'));
 
-// A project owns its own board, memory, sources and ingest queue. The AI/data
-// posture (apiConfig) is a workspace-level setting shared across projects.
-interface ProjectRecord {
-  id: string;
-  name: string;
-  createdAt: string;
-  items: Item[];
-  decisions: Decision[];
-  sources: WebSource[];
-  ingestQueue: IngestItem[];
-}
-
-interface Store {
-  projects: ProjectRecord[];
-  apiConfig: DBState['apiConfig'];
-  agents: Agent[];
-}
-
-// Workspace-wide catalog of assignable AI agents, shared across all projects.
-const defaultAgents: Agent[] = [
-  { id: 'figma-ai', name: 'Figma AI', kind: 'design', description: 'Creates Figma designs and mockups.', builtin: true },
-  { id: 'github-copilot', name: 'GitHub Copilot', kind: 'code', description: 'Implements and reviews code.', builtin: true },
-  { id: 'frontend-dev', name: 'Frontend Dev Agent', kind: 'code', description: 'Builds UI and frontend features.', builtin: true },
-  { id: 'backend-dev', name: 'Backend Dev Agent', kind: 'code', description: 'Builds APIs and backend services.', builtin: true },
-  { id: 'qa-tester', name: 'QA Tester Agent', kind: 'qa', description: 'Exploratory testing and bug triage.', builtin: true },
-  { id: 'docs-writer', name: 'Docs Writer Agent', kind: 'docs', description: 'Writes and updates documentation.', builtin: true },
-  { id: 'unit-test-gen', name: 'Unit Test Generator Agent', kind: 'test', description: 'Generates unit tests for code.', builtin: true },
-  { id: 'security-compliance', name: 'Security & Compliance Agent', kind: 'security', description: 'Reviews security and compliance.', builtin: true }
-];
-
-const defaultApiConfig: DBState['apiConfig'] = {
-  provider: 'managed',
-  providerType: 'gemini',
-  apiKey: '',
-  region: 'us-central1',
-  embeddingsProvider: 'gemini',
-  embeddingsKey: '',
-  noRetention: true,
-  isolateTenant: true
-};
-
-// The pre-seeded backlog/memory that ships as the first ("Core Platform") project.
-function seedSlice(): Pick<ProjectRecord, 'items' | 'decisions' | 'sources' | 'ingestQueue'> {
-  return {
-    items: [
-      {
-        id: 71,
-        title: "Billing Authorization Security Block",
-        description: "Integrate role-based authorization parameters within the core subscription and checkout invoice controllers. Validate tier-based features on both client-side and server-side.",
-        status: "in_progress",
-        priority: "P1",
-        assignee: "AM",
-        area: "auth",
-        created_at: "2026-05-15T10:00:00Z",
-        source: { type: "ticket", name: "JIRA-402", snippet: "Implement backend RBAC for invoice controllers." },
-        verdict: null
-      },
-      {
-        id: 88,
-        title: "High-volume CSV Export Reporter",
-        description: "Asynchronous backend reporting systems that stream large export data directly into structured storage and return secure expirable download URLs. Replaces old synchronous server-blocking CSV dumps.",
-        status: "done",
-        priority: "P1",
-        assignee: "JD",
-        area: "reporting",
-        created_at: "2026-05-20T11:00:00Z",
-        source: { type: "sheet", name: "Product Backlog Sync", snippet: "Row #88: Asynchronous background worker report generator." },
-        verdict: {
-          type: "net-new",
-          confidence: 100,
-          message: "Net-new — nothing like this yet",
-          candidates: []
-        }
-      },
-      {
-        id: 120,
-        title: "Post-Login Deep-Linking Redirect Flow",
-        description: "Sequence router deep-linking and state recovery redirect flags once standard login validation completes successfully. Currently breaks if enterprise clients land with deep nested subroutes directly.",
-        status: "inbox",
-        priority: "P2",
-        assignee: "AM",
-        area: "auth",
-        created_at: "2026-05-28T09:30:00Z",
-        source: { type: "email", name: "Enterprise Workspace HelpDesk", snippet: "Deep linking redirects after nested subdomain logins fail intermittently." },
-        verdict: {
-          type: "impact",
-          confidence: 85,
-          message: "Touches the same authentication flow as Billing Authorization Security Block (#71). Ensure route protection structures are dry.",
-          candidates: [
-            { id: "71", type: "item", title: "Billing Authorization Security Block", reason: "Both modify global auth validation parameters.", confidence: 85 }
-          ],
-          citation: {
-            id: "71",
-            type: "item",
-            title: "Billing Authorization Security Block",
-            snippet: "Integrate role-based authorization parameters within core controllers."
-          }
-        }
-      },
-      {
-        id: 95,
-        title: "Export Billing Details directly to CSV file button",
-        description: "Add a button directly on the invoice overview tab to trigger export logs into a CSV download. Needs to compile billing summaries.",
-        status: "next",
-        priority: "P2",
-        assignee: "JD",
-        area: "reporting",
-        created_at: "2026-05-25T14:45:00Z",
-        source: { type: "sheet", name: "Product Backlog Sync", snippet: "Row #95: Export raw tables to file outputs." },
-        verdict: {
-          type: "duplicate",
-          confidence: 91,
-          message: "Duplicate of existing card High-volume CSV Export Reporter (#88)",
-          candidates: [
-            { id: "88", type: "item", title: "High-volume CSV Export Reporter", reason: "Duplicates the CSV export workers and mechanisms already made in #88.", confidence: 91 }
-          ],
-          citation: {
-            id: "88",
-            type: "item",
-            title: "High-volume CSV Export Reporter",
-            snippet: "Asynchronous backend reporting systems that stream large export data..."
-          }
-        }
-      }
-    ],
-    decisions: [
-      {
-        id: 4,
-        title: "Rely on customer IdP instead of building built-in custom SSO",
-        description: "In the 2026-03 Architecture call we decided to rely heavily on the customer's enterprise Identity Provider (IdP) via single sign-on redirect workflows instead of creating our own database-backed custom SSO models, minimizing credential management overhead and securing data flows.",
-        date: "2026-03-14",
-        area: "auth",
-        createdBy: "AM"
-      },
-      {
-        id: 9,
-        title: "Enforce multi-factor auth (MFA) as absolute default",
-        description: "To meet regulatory governance structures and compliance objectives, Multi-Factor Authentication (MFA) must be enforced statically for all high-privilege executive and administrator panels.",
-        date: "2026-04-10",
-        area: "auth",
-        createdBy: "AM"
-      },
-      {
-        id: 12,
-        title: "Consolidate reporting CSV outputs on server side",
-        description: "We decide to use a unified asynchronous exporter for CSV reports instead of spawning individual client-side scraping scripts, ensuring security limits.",
-        date: "2026-05-12",
-        area: "reporting",
-        createdBy: "JD"
-      }
-    ],
-    sources: [
-      { id: "src-sheet", name: "Google Backlog Sync Sheet", type: "sheet", status: "synced", lastSynced: "2 minutes ago", pendingCount: 0 },
-      { id: "src-transcript", name: "🎙 Arch Call Transcripts", type: "transcript", status: "synced", lastSynced: "30 minutes ago", pendingCount: 3 },
-      { id: "src-email", name: "✉ Customer Feedback Inbox", type: "email", status: "synced", lastSynced: "1 hour ago", pendingCount: 4 },
-      { id: "src-ticket", name: "Jira Syncing Endpoint", type: "ticket", status: "needs_auth", pendingCount: 0 }
-    ],
-    ingestQueue: [
-      {
-        id: "ingest-1",
-        title: "Add custom enterprise database-level auth system for custom SSO logins",
-        description: "Develop custom internal password hashes and token providers supporting on-premise custom SSO login methods directly in database tables.",
-        area: "auth",
-        priority: "P1",
-        sourceId: "src-transcript",
-        sourceSnippet: "We need custom SSO that can connect direct credentials from database tables, bypass direct IdPs if customer doesn't have an outer identity portal.",
-        verdict: {
-          type: "conflict",
-          confidence: 82,
-          message: "Conflicts with architectural Decision #4 (Rely on customer IdP instead of building built-in custom SSO)",
-          candidates: [
-            {
-              id: "4",
-              type: "decision",
-              title: "Rely on customer IdP instead of building built-in custom SSO",
-              reason: "Directly contradicts the decision to rely strictly on the customer's IdP to avoid creating a database SSO repository.",
-              confidence: 82
-            }
-          ],
-          citation: {
-            id: "4",
-            type: "decision",
-            title: "Rely on customer IdP instead of building built-in custom SSO",
-            snippet: "decided to rely heavily on the customer's enterprise Identity Provider ... instead of creating our own database-backed custom SSO model"
-          }
-        }
-      },
-      {
-        id: "ingest-2",
-        title: "Synchronous client-side report download wizard",
-        description: "Create a visual wizard allowing immediate client-side table rendering and direct browser CSV compilations.",
-        area: "reporting",
-        priority: "P2",
-        sourceId: "src-email",
-        sourceSnippet: "Please add standard browser-side scraping download button for current table results directly.",
-        verdict: {
-          type: "conflict",
-          confidence: 89,
-          message: "Conflicts with architectural Decision #12 (Consolidate reporting CSV outputs on server side)",
-          candidates: [
-            {
-              id: "12",
-              type: "decision",
-              title: "Consolidate reporting CSV outputs on server side",
-              reason: "Directly violates the decision to utilize asynchronous server workers over browser-based scraper dumps.",
-              confidence: 89
-            }
-          ],
-          citation: {
-            id: "12",
-            type: "decision",
-            title: "Consolidate reporting CSV outputs on server side",
-            snippet: "unified asynchronous exporter for CSV reports instead of spawning individual client-side scraping scripts"
-          }
-        }
-      }
-    ]
-  };
-}
-
-function initializeStore(): Store {
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
-  }
-
-  const freshStore = (): Store => ({
-    projects: [
-      {
-        id: 'proj-core',
-        name: 'Core Platform',
-        createdAt: '2026-03-01T00:00:00Z',
-        ...seedSlice()
-      }
-    ],
-    apiConfig: { ...defaultApiConfig },
-    agents: defaultAgents.map(a => ({ ...a }))
+// Close cleanly so SQLite checkpoints its WAL file.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    db.close();
+    process.exit(0);
   });
-
-  if (!fs.existsSync(DB_FILE)) {
-    const store = freshStore();
-    fs.writeFileSync(DB_FILE, JSON.stringify(store, null, 2), 'utf-8');
-    return store;
-  }
-
-  try {
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-
-    // New (multi-project) format.
-    if (parsed && Array.isArray(parsed.projects)) {
-      return {
-        apiConfig: { ...defaultApiConfig, ...parsed.apiConfig },
-        agents: Array.isArray(parsed.agents) && parsed.agents.length ? parsed.agents : defaultAgents.map(a => ({ ...a })),
-        projects: parsed.projects
-      };
-    }
-
-    // Legacy single-DBState format → migrate into one project.
-    if (parsed && Array.isArray(parsed.items)) {
-      return {
-        apiConfig: { ...defaultApiConfig, ...parsed.apiConfig },
-        agents: Array.isArray(parsed.agents) && parsed.agents.length ? parsed.agents : defaultAgents.map(a => ({ ...a })),
-        projects: [
-          {
-            id: 'proj-core',
-            name: 'Core Platform',
-            createdAt: '2026-03-01T00:00:00Z',
-            items: parsed.items || [],
-            decisions: parsed.decisions || [],
-            sources: parsed.sources || [],
-            ingestQueue: parsed.ingestQueue || []
-          }
-        ]
-      };
-    }
-
-    return freshStore();
-  } catch (e) {
-    console.warn("Could not read DB file, returning defaults", e);
-    return freshStore();
-  }
-}
-
-let store = initializeStore();
-
-function saveStore() {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(store, null, 2), 'utf-8');
-  } catch (e) {
-    console.error("Error writing DB", e);
-  }
 }
 
 // Resolve the project a request targets (query param for GET/DELETE, body for
 // POST/PUT). Falls back to the first project so older callers keep working.
+// Returns a snapshot: read-only code (ask/author/verdict analysis) consumes it as a plain object,
+// while mutations go through `repo` with `proj.id`.
 function resolveProject(req: express.Request): ProjectRecord | undefined {
   const pid = (req.query.projectId as string) || (req.body && req.body.projectId);
-  if (pid) return store.projects.find(p => p.id === pid);
-  return store.projects[0];
+  return repo.getProject(pid || undefined);
 }
 
 function buildState(proj: ProjectRecord): DBState {
@@ -330,16 +53,17 @@ function buildState(proj: ProjectRecord): DBState {
     decisions: proj.decisions,
     sources: proj.sources,
     ingestQueue: proj.ingestQueue,
-    agents: store.agents,
-    apiConfig: store.apiConfig
+    agents: repo.listAgents(),
+    apiConfig: repo.getApiConfig()
   };
 }
 
 // Helpers for invoking Gemini
 function getGeminiClient() {
   let key = process.env.GEMINI_API_KEY;
-  if (store.apiConfig.provider === 'byok' && store.apiConfig.apiKey) {
-    key = store.apiConfig.apiKey;
+  const apiConfig = repo.getApiConfig();
+  if (apiConfig.provider === 'byok' && apiConfig.apiKey) {
+    key = apiConfig.apiKey;
   }
   if (!key) return null;
   return new GoogleGenAI({
@@ -354,38 +78,17 @@ function getGeminiClient() {
 
 // Project endpoints
 app.get('/api/projects', (req, res) => {
-  res.json(store.projects.map(p => ({
-    id: p.id,
-    name: p.name,
-    createdAt: p.createdAt,
-    itemCount: p.items.length,
-    decisionCount: p.decisions.length,
-    sourceCount: p.sources.length,
-    pendingCount: p.ingestQueue.length
-  })));
+  res.json(repo.listProjectSummaries());
 });
 
 app.post('/api/projects', (req, res) => {
   const name = (req.body.name || '').trim() || 'Untitled project';
-  const proj: ProjectRecord = {
-    id: 'proj-' + Date.now(),
-    name,
-    createdAt: new Date().toISOString(),
-    items: [],
-    decisions: [],
-    sources: [],
-    ingestQueue: []
-  };
-  store.projects.push(proj);
-  saveStore();
-  res.json({ id: proj.id, name: proj.name, createdAt: proj.createdAt, itemCount: 0, decisionCount: 0, sourceCount: 0, pendingCount: 0 });
+  res.json(repo.createProject(name));
 });
 
 app.delete('/api/projects/:id', (req, res) => {
-  const idx = store.projects.findIndex(p => p.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: "Project not found" });
-  store.projects.splice(idx, 1);
-  saveStore();
+  // ON DELETE CASCADE removes the project's items, decisions, sources and ingest queue with it.
+  if (!repo.deleteProject(req.params.id)) return res.status(404).json({ error: "Project not found" });
   res.json({ success: true });
 });
 
@@ -395,23 +98,14 @@ app.post('/api/agents', (req, res) => {
   if (!name) return res.status(400).json({ error: "Agent name required" });
   const validKinds = ['design', 'code', 'qa', 'docs', 'test', 'security', 'custom'];
   const kind = validKinds.includes(req.body.kind) ? req.body.kind : 'custom';
-  const agent: Agent = {
-    id: 'custom-' + Date.now(),
-    name,
-    kind,
-    builtin: false
-  };
-  store.agents.push(agent);
-  saveStore();
-  res.json(agent);
+  res.json(repo.createAgent({ name, kind }));
 });
 
 app.delete('/api/agents/:id', (req, res) => {
-  const agent = store.agents.find(a => a.id === req.params.id);
+  const agent = repo.getAgent(req.params.id);
   if (!agent) return res.status(404).json({ error: "Agent not found" });
   if (agent.builtin) return res.status(400).json({ error: "Built-in agents cannot be removed" });
-  store.agents = store.agents.filter(a => a.id !== req.params.id);
-  saveStore();
+  repo.deleteAgent(req.params.id);
   res.json({ success: true });
 });
 
@@ -421,17 +115,7 @@ app.post('/api/sources', (req, res) => {
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
   const { type, name } = req.body as { type: WebSource['type']; name?: string };
-  const src: WebSource = {
-    id: 'src-' + Date.now(),
-    name: name || 'Connected source',
-    type: type || 'upload',
-    status: 'synced',
-    lastSynced: 'just now',
-    pendingCount: 0
-  };
-  proj.sources.push(src);
-  saveStore();
-  res.json(src);
+  res.json(repo.createSource(proj.id, { type, name }));
 });
 
 // REST APIs
@@ -443,9 +127,8 @@ app.get('/api/state', (req, res) => {
 
 app.post('/api/config', (req, res) => {
   const { projectId, ...cfg } = req.body || {};
-  store.apiConfig = { ...store.apiConfig, ...cfg };
-  saveStore();
-  res.json({ success: true, apiConfig: store.apiConfig });
+  // Only the known settings are stored (unknown keys are ignored, not persisted).
+  res.json({ success: true, apiConfig: repo.updateApiConfig(cfg) });
 });
 
 // Helper for fuzzy match / rules check fallback when API key is missing.
@@ -610,42 +293,24 @@ Schema:
 }
 
 // Items endpoints
+// A verdict analysis runs in the background after an item is created/edited. It writes its result
+// with setItemVerdict, which is a no-op if the item was deleted in the meantime.
+function analyseInBackground(projectId: string, itemId: number, title: string, description: string) {
+  const snapshot = repo.getProject(projectId);
+  if (!snapshot) return;
+  performVerdictAnalysis(snapshot, title, description)
+    .then(verdict => repo.setItemVerdict(projectId, itemId, verdict))
+    .catch(error => console.error(`Verdict analysis failed for item #${itemId}:`, error));
+}
+
 app.post('/api/items', async (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
-  const { title, description, status, priority, assignee, area, source } = req.body;
-  const newId = proj.items.length > 0 ? Math.max(...proj.items.map(i => i.id)) + 1 : 100;
+  const newItem = repo.createItem(proj.id, req.body);
 
-  const newItem: Item = {
-    id: newId,
-    title: title || "Untitled Item",
-    description: description || "",
-    status: status || "inbox",
-    priority: priority || "P2",
-    assignee: assignee || "AM",
-    area: area || "general",
-    created_at: new Date().toISOString(),
-    source: source || null,
-    verdict: {
-      type: 'checking',
-      confidence: 100,
-      message: 'Checking against past decisions...',
-      candidates: []
-    }
-  };
-
-  proj.items.push(newItem);
-  saveStore();
-
-  // Async trigger to compile check status
-  performVerdictAnalysis(proj, newItem.title, newItem.description).then((analyzedVerdict) => {
-    const itemIndex = proj.items.findIndex(i => i.id === newId);
-    if (itemIndex > -1) {
-      proj.items[itemIndex].verdict = analyzedVerdict;
-      saveStore();
-    }
-  });
+  // Async trigger to compile check status (the snapshot includes the new item, as it always did)
+  analyseInBackground(proj.id, newItem.id, newItem.title, newItem.description);
 
   res.json(newItem);
 });
@@ -655,36 +320,30 @@ app.put('/api/items/:id', (req, res) => {
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
   const itemId = parseInt(req.params.id);
-  const foundIdx = proj.items.findIndex(i => i.id === itemId);
-
-  if (foundIdx === -1) {
+  const prevItem = repo.getItem(proj.id, itemId);
+  if (!prevItem) {
     return res.status(404).json({ error: "Item not found" });
   }
 
-  const prevItem = proj.items[foundIdx];
-  const updatedItem = { ...prevItem, ...req.body };
-  delete (updatedItem as any).projectId;
+  const { projectId, ...patch } = req.body;
 
   // If title or description changed, re-analyse background verdict
-  if (req.body.title !== undefined && req.body.title !== prevItem.title ||
-      req.body.description !== undefined && req.body.description !== prevItem.description) {
-    updatedItem.verdict = {
+  const needsRecheck =
+    (patch.title !== undefined && patch.title !== prevItem.title) ||
+    (patch.description !== undefined && patch.description !== prevItem.description);
+  if (needsRecheck) {
+    patch.verdict = {
       type: 'checking',
       confidence: 100,
       message: 'Re-checking decisions...',
       candidates: []
     };
-    performVerdictAnalysis(proj, updatedItem.title, updatedItem.description).then((analyzedVerdict) => {
-      const index = proj.items.findIndex(i => i.id === itemId);
-      if (index > -1) {
-        proj.items[index].verdict = analyzedVerdict;
-        saveStore();
-      }
-    });
   }
 
-  proj.items[foundIdx] = updatedItem;
-  saveStore();
+  const updatedItem = repo.updateItem(proj.id, itemId, patch)!;
+  if (needsRecheck) {
+    analyseInBackground(proj.id, itemId, updatedItem.title, updatedItem.description);
+  }
   res.json(updatedItem);
 });
 
@@ -692,11 +351,7 @@ app.delete('/api/items/:id', (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
-  const itemId = parseInt(req.params.id);
-  const removeIndex = proj.items.findIndex(i => i.id === itemId);
-  if (removeIndex > -1) {
-    proj.items.splice(removeIndex, 1);
-    saveStore();
+  if (repo.deleteItem(proj.id, parseInt(req.params.id))) {
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Item not found" });
@@ -709,53 +364,53 @@ app.post('/api/items/:id/verdict/resolve', (req, res) => {
 
   const itemId = parseInt(req.params.id);
   const action = req.body.action; // 'dismiss' | 'merge' | 'supersede' | 'confirm'
-  const index = proj.items.findIndex(i => i.id === itemId);
+  const item = repo.getItem(proj.id, itemId);
 
-  if (index === -1) {
+  if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
 
-  const item = proj.items[index];
-
   if (action === 'dismiss') {
     // Mark as clean or cleared
-    item.verdict = {
+    repo.setItemVerdict(proj.id, itemId, {
       type: 'net-new',
       confidence: 100,
       message: "Dismissed conflict. Backlog item approved by user.",
       candidates: []
-    };
+    });
   } else if (action === 'merge') {
     // Delete item or change status/merge details
-    const targetMergeId = req.body.targetId;
-    if (targetMergeId) {
-      proj.items.splice(index, 1);
+    if (req.body.targetId) {
+      repo.deleteItem(proj.id, itemId);
     }
   } else if (action === 'supersede') {
     // De-couple decision or create a superseded note inside database decisions
     const decId = parseInt(req.body.targetId);
     if (!isNaN(decId)) {
-      const decIdx = proj.decisions.findIndex(d => d.id === decId);
-      if (decIdx > -1) {
-        // Create an update/link noting it is superseded
-        proj.decisions[decIdx].description += `\n[SUPERSEDED BY ITEM #${item.id} ON ${new Date().toLocaleDateString()}]`;
-      }
+      // Create an update/link noting it is superseded
+      repo.appendToDecisionDescription(
+        proj.id,
+        decId,
+        `\n[SUPERSEDED BY ITEM #${item.id} ON ${new Date().toLocaleDateString()}]`
+      );
     }
-    item.verdict = {
+    repo.setItemVerdict(proj.id, itemId, {
       type: 'net-new',
       confidence: 100,
       message: `Superseded Decision #${req.body.targetId}. Net-new validated.`,
       candidates: []
-    };
+    });
   } else if (action === 'confirm') {
     // Kept as flagged for historical lock
     if (item.verdict) {
-      item.verdict.message = "Confirmed conflict. Backlog item remains flagged for rework.";
+      repo.setItemVerdict(proj.id, itemId, {
+        ...item.verdict,
+        message: "Confirmed conflict. Backlog item remains flagged for rework."
+      });
     }
   }
 
-  saveStore();
-  res.json({ success: true, item: proj.items[index] || null });
+  res.json({ success: true, item: repo.getItem(proj.id, itemId) ?? null });
 });
 
 // Decisions endpoints
@@ -763,21 +418,7 @@ app.post('/api/decisions', (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
-  const { title, description, area, createdBy } = req.body;
-  const newId = proj.decisions.length > 0 ? Math.max(...proj.decisions.map(d => d.id)) + 1 : 1;
-
-  const newDecision: Decision = {
-    id: newId,
-    title: title || "New Decision",
-    description: description || "",
-    area: area || "general",
-    createdBy: createdBy || "AM",
-    date: new Date().toISOString().split('T')[0]
-  };
-
-  proj.decisions.push(newDecision);
-  saveStore();
-  res.json(newDecision);
+  res.json(repo.createDecision(proj.id, req.body));
 });
 
 // Conversational Ask Memory endpoint
@@ -1001,11 +642,10 @@ app.post('/api/deprecate', (req, res) => {
 
 // Sources review pipeline
 // Real pipeline (parse/chunk/extract/embed/provenance) — proxied to the Python backend,
-// which returns the extracted candidates already IngestItem-shaped. This process still owns
-// proj.ingestQueue (nothing has migrated items/decisions/projects to the backend yet), so it
-// merges the result in, matching exactly what the old inline handler used to do with its own
-// mock-extracted items. See plans/ingestion.md "Placement" for why this is a merge, not a
-// dumb relay: /api/state still reads from this process's store.
+// which returns the extracted candidates already IngestItem-shaped. This process still owns the
+// review queue and the board (nothing has migrated items/decisions/projects to the backend yet),
+// so it stores the result in its own database — a merge, not a dumb relay, because /api/state
+// reads from here. See plans/ingestion.md "Placement".
 async function forwardToIngestionBackend(path: string, init: RequestInit) {
   const response = await fetch(`${BACKEND_URL}${path}`, init);
   const body = await response.json().catch(() => null);
@@ -1037,8 +677,7 @@ app.post('/api/sources/upload', async (req, res) => {
       body: JSON.stringify({ fileName, fileContent, projectId: proj.id })
     });
     const items = (result.items || []) as IngestItem[];
-    proj.ingestQueue.push(...items);
-    saveStore();
+    repo.addIngestItems(proj.id, items);
     res.json({ success: true, count: items.length, items });
   } catch (error) {
     ingestionUnavailableResponse(res, error);
@@ -1062,8 +701,7 @@ app.post('/api/sources/upload-file', upload.single('file'), async (req, res) => 
       { method: 'POST', body: form }
     );
     const items = (result.items || []) as IngestItem[];
-    proj.ingestQueue.push(...items);
-    saveStore();
+    repo.addIngestItems(proj.id, items);
     res.json({ success: true, count: items.length, items });
   } catch (error) {
     ingestionUnavailableResponse(res, error);
@@ -1087,9 +725,9 @@ app.post('/api/ingest/resolve', async (req, res) => {
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
   const { id, action } = req.body; // 'approve' | 'dismiss'
-  const index = proj.ingestQueue.findIndex(iq => iq.id === id);
+  const queued = repo.getIngestItem(proj.id, id);
 
-  if (index === -1) {
+  if (!queued) {
     return res.status(404).json({ error: "Item not found in review queue" });
   }
 
@@ -1101,28 +739,12 @@ app.post('/api/ingest/resolve', async (req, res) => {
     });
 
     if (action === 'approve' && result.item) {
-      const newId = proj.items.length > 0 ? Math.max(...proj.items.map(i => i.id)) + 1 : 100;
-      const newItem: Item = {
-        id: newId,
-        title: result.item.title,
-        description: result.item.description,
-        status: 'inbox',
-        priority: result.item.priority,
-        assignee: 'AM',
-        area: result.item.area,
-        created_at: new Date().toISOString(),
-        source: {
-          type: 'upload',
-          name: 'Ingestion Pipeline',
-          snippet: result.item.sourceSnippet
-        },
-        verdict: proj.ingestQueue[index].verdict
-      };
-      proj.items.push(newItem);
+      // Migrate to the board: the card is created and the queue entry removed in one transaction.
+      repo.approveIngestItem(proj.id, queued, result.item);
+    } else {
+      repo.deleteIngestItem(proj.id, id);
     }
 
-    proj.ingestQueue.splice(index, 1);
-    saveStore();
     res.json({ success: true });
   } catch (error) {
     ingestionUnavailableResponse(res, error);

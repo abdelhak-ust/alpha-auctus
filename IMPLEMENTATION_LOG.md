@@ -8,6 +8,69 @@ phase is implemented and passes `nexus-verify` — newest entry on top.
 
 ---
 
+## 2026-09-25 — Real database (SQLite) for the board data
+
+**What:** `client/server.ts`'s JSON-file store (`data/database.json`: whole file loaded into memory,
+mutated in place, rewritten wholesale by `saveStore()` after every change) is replaced by a real
+SQLite database, per `plans/node-sqlite-store.md` (now `done`). New `client/db/`: versioned
+migrations (`PRAGMA user_version`), a repository that owns every SQL statement, a first-boot
+importer that reads the legacy JSON (both formats the old server accepted) or the built-in seed,
+and the seed data moved out of `server.ts`. ~15 mutating handlers rewritten to targeted SQL; the
+read-only AI paths (`/api/ask`, `/api/author`, verdict analysis) are untouched — they consume a
+project snapshot with the same shape as before. **Zero API changes.** `database.json` is now only
+the seed a fresh clone imports; it's never written again, so `git status` stops churning.
+Interim by design ("sqlite for now"): moving this data into the Python/Postgres backend remains
+the long-term direction.
+
+**Deliberate behaviour changes:** `POST /api/config` and `PUT /api/items/:id` no longer persist
+arbitrary request-body keys (the JSON store let a PUT rewrite an item's `id`) — both asserted
+explicitly by the differential test. `merge` in verdict-resolve now returns `item: null` instead of
+the *neighbouring* item (an off-by-one after `splice`) — found by reading the code; the
+differential test *excludes* that one response field, so it is not independently verified
+(the UI ignores it). Fire-and-forget verdict promises now have a `.catch` (a DB error there would
+have been an unhandled rejection that crashes Node) — defensive, not tested. Preserved on purpose:
+per-project ids (`#100`/`#1` starts, `MAX+1`, reuse-after-delete).
+
+**Problems hit and how they were resolved:** `better-sqlite3` v13's prebuilt binary **segfaults
+(exit 139) on `new Database()` under Node 23.3.0**, and compiling from source is impossible here
+because the project path contains a space (`Personal Projects`) and node-gyp doesn't quote its
+include paths — so it's pinned to v12.11.1 (declares Node 20–24; works). A design catch during
+implementation: "import when there are no projects" would resurrect the seed after a user deletes
+every project, so bootstrap is gated by a `meta` flag instead. During verification, the user's
+`database.json` changed under me (new projects created on their running server), so the backup and
+golden capture were refreshed, and the SQLite file my test boot created was deleted afterwards —
+left in place it would have been a stale snapshot that made the user's first real boot skip the
+import.
+
+**Files:** `client/db/{index,migrations,repo,import-json,seed,types}.ts` and
+`client/db/repo.test.ts` (new); `client/server.ts` (store + handlers rewritten; `PORT` now
+env-overridable); `client/package.json`/`package-lock.json` (+`better-sqlite3`,
++`@types/better-sqlite3`, `npm test`); `.gitignore` (`nexus.db*`); `CLAUDE.md`;
+`.claude/skills/nexus-verify/SKILL.md`; `plans/node-sqlite-store.md`.
+
+**Verified:** **Differential test — the old JSON code (git HEAD) vs the new SQLite code, both fully
+isolated, identical scripted requests: 66 compared steps all identical** (projects, decisions,
+items with the 1.5 s background analysis, all four verdict-resolve actions, sources, agents,
+config, ask/author/deprecate, ingestion via a stub backend, cascade delete), plus the intentional
+deltas checked explicitly. Golden parity on the user's real 5 projects: `/api/projects` and every
+`/api/state` byte-identical. Durability (write → SIGTERM → restart: intact, no re-import, WAL
+checkpointed). Cross-stack: the real Python `provisional_verdict` read a decision from the
+SQLite-backed Node and returned a cited conflict. `npm test` 37/37, `tsc` clean, `npm run build`
++ `node dist/server.cjs` boot/import/serve OK, backend `pytest` 23/23 + `ruff` clean.
+
+**Open:** (1) **Restart your `npm run dev` on :3000** to pick this up — the process running now is
+still the old JSON code; its first boot imports `database.json` (incl. `test`/`qwerty`).
+(2) The **browser walkthrough was not done**: the app's login form needs typed credentials, which
+I don't enter. The UI only consumes the API verified above, but a click-through is still worth doing.
+(3) `apiKey`/`embeddingsKey` are stored in plaintext in the DB — gitignored now (they used to sit in
+a git-tracked JSON file), but encrypting at rest is out of scope. (4) WAL mode is working on this
+ExFAT volume; if it ever misbehaves, switching `journal_mode` in `db/index.ts` is the lever.
+(5) Re-check `better-sqlite3` v13 after a Node upgrade.
+
+**Commit:** _pending — see the next commit in `git log`._
+
+---
+
 ## 2026-09-24 — Ingestion pipeline (P6), backend + frontend
 
 **What:** The real architecture.md pipeline (parse → chunk → extract → embed → provenance),

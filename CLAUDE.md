@@ -29,7 +29,9 @@ that's a gap to flag, not a blank to fill from taste.
 ## Repo layout
 - `client/` — React 19 + TypeScript + Vite + Tailwind v4 SPA. Every screen in the spec is
   built here (`client/src/App.tsx`, `client/src/components/`). Currently talks to
-  `client/server.ts` (an Express + JSON-file mock) — being replaced by `backend/`.
+  `client/server.ts` (Express) — its board data (projects, items, decisions, sources, ingest
+  queue, agents, AI settings) lives in a **SQLite** database via `client/db/`; the AI paths there
+  are still mocked/Gemini. Being replaced by `backend/` phase by phase.
 - `backend/` — Python 3.13 + FastAPI, built phase by phase per the plan. Poetry-managed.
   AI (generation + embeddings) always goes through **Vertex AI**; local dev otherwise stays
   local (Postgres+pgvector, filesystem blobs, arq) and deployed environments go GCP-native
@@ -44,7 +46,11 @@ that's a gap to flag, not a blank to fill from taste.
 
 ## Running it locally
 - Frontend: `cd client && npm run dev` (or the `nexus-client` preview config in
-  `.claude/launch.json`) — port 3000.
+  `.claude/launch.json`) — port 3000 (`PORT=…` overrides). The board data is a SQLite file,
+  `client/data/nexus.db` (gitignored). On first boot it is populated from `client/data/
+  database.json` (the legacy JSON store, kept only as the seed — never written again); to reset
+  to that seed, stop the server, delete `nexus.db*`, restart. Uses `better-sqlite3` **v12** — v13
+  segfaults on Node 23.3 and can't be compiled from source in a path containing a space.
 - Backend: `cd backend && poetry install && poetry run uvicorn app.main:app --reload --port
   8000`. Needs local Postgres 16 with the `nexus_dev` database and the `vector` extension
   (see `backend/README.md` — pgvector was built from source on this machine since the
@@ -53,8 +59,9 @@ that's a gap to flag, not a blank to fill from taste.
   the plan's §0.3 checklist.
 
 ## Verifying a change
-- Frontend: `cd client && npx tsc --noEmit` must be clean; drive the change in the browser
-  preview (never run dev servers via bash — use the preview tools).
+- Frontend: `cd client && npx tsc --noEmit` must be clean and `npm test` (the `client/db/`
+  repository, `node:test` via tsx) must pass; drive the change in the browser preview (never run
+  dev servers via bash — use the preview tools).
 - Backend: `cd backend && poetry run pytest && poetry run ruff check .`
 - Every phase in the plan has its own "Verification" subsection — follow it, don't invent a
   different check.

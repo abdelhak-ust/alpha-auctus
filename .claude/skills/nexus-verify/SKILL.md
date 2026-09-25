@@ -11,10 +11,11 @@ silently skip a failing step or declare success without having run it.
 ## 1. Frontend (if `client/` changed)
 
 ```bash
-cd client && npx tsc --noEmit
+cd client && npx tsc --noEmit && npm test
 ```
 
-Must be clean. If the change is visually/behaviorally observable, drive it in the browser
+Both must pass (`npm test` runs the `client/db/` repository tests — `node:test` via tsx, in-memory
+SQLite, touches no files). If the change is visually/behaviorally observable, drive it in the browser
 preview (`preview_start` with the `nexus-client` config from `.claude/launch.json`) — never
 launch dev servers with plain `bash`.
 
