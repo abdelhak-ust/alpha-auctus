@@ -67,7 +67,7 @@ a git-tracked JSON file), but encrypting at rest is out of scope. (4) WAL mode i
 ExFAT volume; if it ever misbehaves, switching `journal_mode` in `db/index.ts` is the lever.
 (5) Re-check `better-sqlite3` v13 after a Node upgrade.
 
-**Commit:** _pending — see the next commit in `git log`._
+**Commit:** `c38548c`
 
 ---
 
