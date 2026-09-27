@@ -5,14 +5,22 @@ import { VerdictBadge } from './VerdictBadge.js';
 import { CitationChip } from './CitationChip.js';
 import { AssigneeSelect } from './AssigneeSelect.js';
 import { resolveAssignee, isAgentRef, agentKindStyle } from '../lib/assignee.js';
-import { Status, Priority } from '../types.js';
+import { AskCitation, AskTurn, Status, Priority } from '../types.js';
+import { BackendError } from '../lib/backend.js';
+import { parseBoardSubtasks, recomposeBoardDescription, subtasksFromGenerated } from '../lib/subtasks.js';
+
+const ASK_EXAMPLES = [
+  'What does this include?',
+  'What does this depend on?',
+  'Why was this decided?',
+];
 
 export const Drawer: React.FC = () => {
-  const { selectedCardId, setSelectedCardId, state, updateItem, deleteItem, resolveVerdict, askQuestion } = useProject();
+  const { selectedCardId, setSelectedCardId, state, features, updateItem, deleteItem, resolveVerdict, askQuestion, triggerToast } = useProject();
   const [activeTab, setActiveTab] = useState<'overview' | 'ask' | 'impact' | 'history' | 'citations'>('overview');
   const [isWide, setIsWide] = useState(false);
   const [chatInput, setChatInput] = useState("");
-  const [chatHistory, setChatHistory] = useState<Array<{ sender: 'user' | 'ai'; text: string; citations?: any[] }>>([]);
+  const [chatHistory, setChatHistory] = useState<Array<{ sender: 'user' | 'ai'; text: string; citations?: AskCitation[] }>>([]);
   const [loadingChat, setLoadingChat] = useState(false);
 
   // Editing state variables
@@ -28,22 +36,40 @@ export const Drawer: React.FC = () => {
   useEffect(() => {
     if (item) {
       setTitle(item.title);
-      setDescription(item.description);
+      setDescription(parseBoardSubtasks(item.description).body);
       setStatus(item.status);
       setPriority(item.priority);
       setArea(item.area);
       setAssignee(item.assignee);
-      // Reset Chat History when a different item is clicked
-      setChatHistory([
-        { sender: 'ai', text: `I am ready. Ask me anything in-context about Backlog Card #${item.id} ("${item.title}"). I can scan dependencies, evaluate risk relative to Dec #4 or Dec #12, or draft subtasks.` }
-      ]);
     }
   }, [selectedCardId, item]);
 
+  useEffect(() => {
+    setChatHistory([]);
+    setChatInput("");
+    setLoadingChat(false);
+  }, [selectedCardId]);
+
   if (!selectedCardId || !item) return null;
+
+  const storedSubtasks = parseBoardSubtasks(item.description);
+  const generatedTask = features.flatMap(f => f.tasks).find(t => t.boardItemId === item.id);
+  const checklist = storedSubtasks.hadSection
+    ? storedSubtasks.subtasks
+    : subtasksFromGenerated(generatedTask?.subtasks);
 
   const handleFieldSave = async (fieldName: string, value: any) => {
     await updateItem(item.id, { [fieldName]: value });
+  };
+
+  const handleDescriptionSave = async () => {
+    const edited = parseBoardSubtasks(description);
+    const next = edited.hadSection
+      ? description
+      : storedSubtasks.hadSection
+        ? recomposeBoardDescription(description, storedSubtasks.subtasks)
+        : description;
+    await handleFieldSave('description', next);
   };
 
   const handleDelete = async () => {
@@ -53,27 +79,34 @@ export const Drawer: React.FC = () => {
     }
   };
 
-  const handleChatSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInput.trim()) return;
-
-    const userMsg = chatInput;
+  const sendAsk = async (userMsg: string) => {
+    const prior: AskTurn[] = chatHistory
+      .map(cm => ({ role: cm.sender === 'user' ? 'user' as const : 'ai' as const, text: cm.text }))
+      .slice(-8);
     setChatInput("");
     setChatHistory(prev => [...prev, { sender: 'user', text: userMsg }]);
     setLoadingChat(true);
 
     try {
-      const data = await askQuestion(userMsg, item.id);
+      const data = await askQuestion(userMsg, item.id, prior);
       setChatHistory(prev => [...prev, {
         sender: 'ai',
         text: data.answer,
         citations: data.citations
       }]);
     } catch (err) {
-      setChatHistory(prev => [...prev, { sender: 'ai', text: "Couldn't reach the AI provider. Check your key in Settings ▸ Data & AI." }]);
+      triggerToast(err instanceof BackendError
+        ? err.toDisplay()
+        : "Couldn't ask about this card (unexpected client error). Retry, or check the browser console.");
     } finally {
       setLoadingChat(false);
     }
+  };
+
+  const handleChatSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || loadingChat) return;
+    await sendAsk(chatInput.trim());
   };
 
   const getSourceIconName = (type: string) => {
@@ -157,8 +190,8 @@ export const Drawer: React.FC = () => {
         ))}
       </div>
 
-      {/* Drawer Body (Scrollable Panel) */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+      {/* Drawer Body — Ask pins the composer; other tabs scroll as a single panel */}
+      <div className={`flex-1 min-h-0 ${activeTab === 'ask' ? 'flex flex-col p-5' : 'overflow-y-auto p-5 space-y-5'}`}>
         
         {/* TAB 1: OVERVIEW */}
         {activeTab === 'overview' && (
@@ -292,7 +325,7 @@ export const Drawer: React.FC = () => {
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                onBlur={() => handleFieldSave('description', description)}
+                onBlur={handleDescriptionSave}
                 rows={5}
                 className="w-full bg-stone-50 dark:bg-stone-950 border border-stone-200 dark:border-stone-850 rounded-[var(--r-md)] p-3 text-xs leading-relaxed focus:outline-none focus:border-[var(--accent)] font-sans text-stone-800 dark:text-stone-250"
                 placeholder="Write specific requirements / architectural briefs here..."
@@ -314,22 +347,34 @@ export const Drawer: React.FC = () => {
               </div>
             )}
 
-            {/* Subtask Checklists (Section 4.1 "subtsk") */}
+            {/* Subtask checklist — from ## Subtasks in the description, or the generated task */}
             <div className="space-y-2">
               <span className="text-xs font-semibold text-stone-400 uppercase tracking-wider block">Subtask checklist</span>
-              <div className="space-y-1 bg-stone-50/20 dark:bg-stone-900/20 border border-stone-150 dark:border-stone-850 p-3 rounded-[var(--r-md)] text-xs select-none">
-                <div className="flex items-center gap-2 py-1">
-                  <input type="checkbox" defaultChecked className="rounded text-[var(--accent)]" />
-                  <span className="text-stone-500 line-through">Draft security schema guidelines</span>
-                </div>
-                <div className="flex items-center gap-2 py-1">
-                  <input type="checkbox" defaultChecked className="rounded text-[var(--accent)]" />
-                  <span className="text-stone-500 line-through">Run integration checking suite</span>
-                </div>
-                <div className="flex items-center gap-2 py-1">
-                  <input type="checkbox" className="rounded text-[var(--accent)]" />
-                  <span className="text-stone-800 dark:text-stone-300">Publish unified spec for controllers</span>
-                </div>
+              <div className="space-y-1 bg-stone-50/20 dark:bg-stone-900/20 border border-stone-150 dark:border-stone-850 p-3 rounded-[var(--r-md)] text-xs">
+                {checklist.length === 0 ? (
+                  <p className="text-stone-500 dark:text-stone-400">No subtasks on this card.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {checklist.map((step, i) => (
+                      <li key={`${step.text}-${i}`} className="flex items-start gap-2 py-1">
+                        <input
+                          type="checkbox"
+                          checked={step.checked}
+                          readOnly
+                          tabIndex={-1}
+                          aria-hidden
+                          className="mt-0.5 rounded text-[var(--accent)] pointer-events-none"
+                        />
+                        <span className={step.checked
+                          ? 'text-stone-500 dark:text-stone-500 line-through'
+                          : 'text-stone-800 dark:text-stone-300'}
+                        >
+                          {step.text}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           </div>
@@ -337,8 +382,29 @@ export const Drawer: React.FC = () => {
 
         {/* TAB 2: ASK (Contextual AI chat query scoped to this card) */}
         {activeTab === 'ask' && (
-          <div className="h-full flex flex-col justify-between block">
-            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 pb-14 text-xs">
+          <>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-2 text-xs space-y-4">
+              {chatHistory.length === 0 && !loadingChat && (
+                <div className="space-y-3">
+                  <p className="text-stone-600 dark:text-stone-300 leading-relaxed font-sans">
+                    Ask about this card — what it is, what it depends on, or why it was decided. I’ll answer from this task and its sources, and say so when I don’t know.
+                  </p>
+                  <span className="text-[11px] font-mono text-stone-400 uppercase tracking-wider block">Example prompts</span>
+                  <div className="grid grid-cols-1 gap-2">
+                    {ASK_EXAMPLES.map(pr => (
+                      <button
+                        key={pr}
+                        type="button"
+                        onClick={() => setChatInput(pr)}
+                        className="p-2.5 text-left border border-stone-200 dark:border-stone-800 hover:border-[var(--accent)] focus:outline-none focus:border-[var(--accent)] rounded-[var(--r-sm)] bg-stone-50/20 dark:bg-stone-900/10 text-xs text-stone-600 dark:text-stone-300 hover:text-[var(--accent)] cursor-pointer"
+                      >
+                        {pr}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {chatHistory.map((cm, idx) => (
                 <div
                   key={idx}
@@ -368,28 +434,30 @@ export const Drawer: React.FC = () => {
                   <div className="w-2 h-2 rounded-full bg-[var(--accent)] animate-bounce" />
                   <div className="w-2 h-2 rounded-full bg-[var(--accent)] animate-bounce [animation-delay:0.2s]" />
                   <div className="w-2 h-2 rounded-full bg-[var(--accent)] animate-bounce [animation-delay:0.4s]" />
-                  <span>Scanning memory records...</span>
+                  <span>thinking… searching memory</span>
                 </div>
               )}
             </div>
 
-            {/* Input form */}
-            <form onSubmit={handleChatSend} className="mt-4 flex gap-2">
+            <form onSubmit={handleChatSend} className="mt-3 pt-3 border-t border-stone-200 dark:border-stone-850 shrink-0 flex gap-2">
               <input
                 type="text"
-                placeholder={`Ask Dec-Memory why we built custom SSO...`}
+                placeholder="Ask about this card…"
+                aria-label="Ask about this card"
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
-                className="flex-1 bg-stone-100 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 p-2 py-1.5 text-xs rounded-[var(--r-sm)] focus:outline-none focus:border-[var(--accent)] placeholder-stone-400 dark:placeholder-stone-500 text-stone-800 dark:text-stone-100"
+                disabled={loadingChat}
+                className="flex-1 bg-stone-100 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 p-2 py-1.5 text-xs rounded-[var(--r-sm)] focus:outline-none focus:border-[var(--accent)] placeholder-stone-400 dark:placeholder-stone-500 text-stone-800 dark:text-stone-100 disabled:opacity-50"
               />
               <button
                 type="submit"
-                className="p-1 px-3 bg-[var(--accent)] text-white text-xs font-semibold rounded-[var(--r-sm)] hover:opacity-95 cursor-pointer"
+                disabled={!chatInput.trim() || loadingChat}
+                className="p-1 px-3 bg-[var(--accent)] text-white text-xs font-semibold rounded-[var(--r-sm)] hover:opacity-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Ask
               </button>
             </form>
-          </div>
+          </>
         )}
 
         {/* TAB 3: IMPACT */}

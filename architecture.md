@@ -227,6 +227,15 @@ review," never auto-resolve.
 
 ## Ingestion pipeline
 
+> **Superseded in detail (2026-09-26).** The ingestion flow is now the three-stage feature
+> pipeline: `plans/ingestion.md` (documents → Feature Registry) → `plans/FEATURE_REGISTRY.md`
+> (clarification chat → dev-ready) → `plans/Devevloper_tasks_factory.md` (developer tasks),
+> bound by `plans/feature-pipeline-contract.md`. It adds a **Feature** entity (features +
+> feature_versions + feature_relations, with readiness data) to the data model above.
+> **Owner decisions (2026-09-26):** Feature is a **new entity** (Entity stays the area/component
+> tag), and the new ingestion extracts **features only — no DecisionRecords**; its conflict
+> detection is feature-vs-feature. The sketch below is kept as the original intent.
+
 ```
 SOURCE (doc · transcript · email · ticket · sheet)
    │
@@ -302,11 +311,12 @@ own private store.
   Google Sheets / Excel sync as a connector.
 - **App layer:** typed API (TypeScript/Node or Python/FastAPI), background job
   queue for ingestion + classification.
-- **Memory Core:** Postgres (Items, Decisions, Entities, Edges, Verdicts) +
-  `pgvector` (or a managed vector store) for embeddings. Postgres-native keeps the
-  hybrid store in one system early.
-- **AI adapter:** Claude for extraction/classification/authoring; an embeddings
-  provider (e.g. Voyage/OpenAI) behind the adapter interface.
+- **Memory Core:** Postgres (Items, Decisions, Entities, Edges, Verdicts, Features) +
+  **Qdrant** for embeddings *(decided 2026-09-26, replaces the earlier `pgvector` suggestion —
+  see `plans/feature-pipeline-contract.md` §1)*.
+- **AI adapter:** **Gemini via Vertex AI** for extraction/classification/authoring and
+  embeddings *(decided 2026-09-26)*, behind the adapter interface.
+- **Orchestration:** **LangGraph** for the ingestion → readiness → task-generation pipeline.
 
 ## Cross-cutting concerns
 

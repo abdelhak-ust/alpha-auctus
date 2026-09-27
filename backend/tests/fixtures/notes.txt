@@ -1,0 +1,5 @@
+Kickoff meeting notes
+
+Admins can export the audit log as CSV.
+
+Sessions expire after 30 minutes of inactivity.

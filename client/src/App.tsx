@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useTransition } from 'react';
+import React, { useState, useEffect, useTransition, useMemo, useRef } from 'react';
 import {
   ProjectProvider,
   useProject
@@ -9,6 +9,15 @@ import {
 import {
   VerdictRow
 } from './components/VerdictRow.js';
+import {
+  FeaturesView
+} from './components/FeaturesView.js';
+import {
+  ProjectChat
+} from './components/ProjectChat.js';
+import {
+  WorkflowStepper
+} from './components/WorkflowStepper.js';
 import {
   CitationChip
 } from './components/CitationChip.js';
@@ -28,6 +37,15 @@ import {
   LandingPage
 } from './components/LandingPage.js';
 import {
+  clearAuth,
+  isAuthed,
+  resolveSession,
+  sessionDisplayName,
+  writeAuthFlag,
+  writeSession,
+  type SessionProfile,
+} from './lib/session.js';
+import {
   ProjectsView
 } from './components/ProjectsView.js';
 import {
@@ -37,8 +55,21 @@ import {
   NewProjectSetup
 } from './components/NewProjectSetup.js';
 import {
-  ClarificationChat
-} from './components/ClarificationChat.js';
+  RunsView
+} from './components/RunsView.js';
+import {
+  ReviewsView
+} from './components/ReviewsView.js';
+import {
+  DeliveryView
+} from './components/DeliveryView.js';
+import {
+  RunChip
+} from './components/StatusBadges.js';
+import {
+  buildRuns,
+  buildReviews
+} from './lib/delivery.js';
 import {
   LayoutDashboard,
   Bell,
@@ -56,20 +87,27 @@ import {
   Database,
   ArrowRight,
   Sparkles,
+  Layers,
+  MessagesSquare,
   Search,
   Check,
+  CheckCircle2,
   ChevronRight,
   Undo2,
   Lock,
   BookmarkPlus,
   AlertTriangle,
   Bot,
-  LogOut
+  LogOut,
+  Cog,
+  Rocket
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
-import { IngestItem, Item, Status, Priority, AgentKind } from './types.js';
+import { IngestItem, Item, Status, Priority, AgentKind, AskCitation } from './types.js';
 import { resolveAssignee, agentKindStyle } from './lib/assignee.js';
+import { BackendError, INGEST_ACCEPT, isIngestibleFile, progressLabel, withPeriod } from './lib/backend.js';
+import { MvpDocument } from './types.js';
 
 function DashboardView() {
   const { state, addItem, updateItem, setSelectedCardId, refreshState, triggerToast } = useProject();
@@ -134,6 +172,17 @@ function DashboardView() {
   const filteredItems = getFilteredItems();
 
   const areas = state ? Array.from(new Set(state.items.map(i => i.area))) : [];
+
+  // Runs/reviews are derived from the board so a card can show its live run status
+  // (spec §4.1: the board doubles as an at-a-glance execution dashboard).
+  const runByItem = useMemo(() => {
+    const runs = buildRuns(state?.items || [], state?.agents || []);
+    return new Map(runs.map(r => [r.itemId, r]));
+  }, [state?.items, state?.agents]);
+  const reviewByItem = useMemo(() => {
+    const reviews = buildReviews(state?.items || [], state?.agents || []);
+    return new Map(reviews.map(r => [r.itemId, r]));
+  }, [state?.items, state?.agents]);
 
   return (
     <div className="space-y-6">
@@ -296,6 +345,18 @@ function DashboardView() {
                         </div>
                       )}
 
+                      {/* Run-status chip — appears once a card is agent work in flight (§4.1) */}
+                      {(() => {
+                        const run = runByItem.get(item.id);
+                        if (!run) return null;
+                        const review = reviewByItem.get(item.id);
+                        return (
+                          <div className="mt-2.5">
+                            <RunChip status={run.status} met={review?.metCount} total={review?.totalCount} />
+                          </div>
+                        );
+                      })()}
+
                       <div className="mt-3.5 pt-2 border-t border-stone-100 dark:border-stone-900 flex items-center justify-between text-[10px] text-stone-400 font-medium">
                         <span className="bg-stone-50 dark:bg-stone-900 px-1.5 py-0.5 rounded font-mono uppercase">
                           ⬡ {item.area}
@@ -371,7 +432,7 @@ function AskView() {
   const { askQuestion } = useProject();
   const [query, setQuery] = useState("");
   const [answer, setAnswer] = useState("");
-  const [citations, setCitations] = useState<any[]>([]);
+  const [citations, setCitations] = useState<AskCitation[]>([]);
   const [loading, setLoading] = useState(false);
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -387,16 +448,17 @@ function AskView() {
       setAnswer(data.answer);
       setCitations(data.citations || []);
     } catch (e) {
-      setAnswer("Couldn't reach the AI provider. Check your key in Settings ▸ Data & AI.");
+      setAnswer(e instanceof BackendError ? e.toDisplay() : 'Something went wrong.');
     } finally {
       setLoading(false);
     }
   };
 
   const samplePrompts = [
-    "Why did we decide against building SSO?",
-    "What is the state of auth?",
-    "What breaks if we change CSV?"
+    "Is anyone already working on this feature?",
+    "What did we decide about the uploaded spec?",
+    "What breaks if we change this requirement?",
+    "Which requirements are still unmet?",
   ];
 
   return (
@@ -434,7 +496,7 @@ function AskView() {
       {answer === "" && !loading && (
         <div className="space-y-3 pt-2">
           <span className="text-[11px] font-mono text-stone-400 uppercase tracking-wider">Example queries</span>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {samplePrompts.map(pr => (
               <button
                 key={pr}
@@ -453,7 +515,7 @@ function AskView() {
         <div className="p-8 border rounded-[var(--r-lg)] border-stone-200 dark:border-stone-800 bg-stone-50/20 dark:bg-stone-900/10 text-center space-y-3">
           <div className="w-6 h-6 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="text-xs font-mono text-stone-400 animate-pulse">
-            Searching memory…
+            thinking… searching memory
           </p>
         </div>
       )}
@@ -491,25 +553,43 @@ function AskView() {
 }
 
 function AuthorView() {
-  const { generateDocument, triggerToast } = useProject();
-  const [area, setArea] = useState("auth");
+  const { generateDocument, triggerToast, state, features } = useProject();
+  const [area, setArea] = useState("all");
   const [type, setType] = useState<'brd' | 'spec' | 'tree'>('brd');
   const [time, setTime] = useState("30");
   const [docMarkdown, setDocMarkdown] = useState("");
   const [unresolvedCount, setUnresolvedCount] = useState(0);
+  const [citations, setCitations] = useState<AskCitation[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const areas = useMemo(() => {
+    const seen = new Set<string>();
+    for (const item of state?.items ?? []) {
+      const slug = item.area?.trim();
+      if (slug) seen.add(slug);
+    }
+    for (const feature of features) {
+      for (const task of feature.tasks ?? []) {
+        const slug = task.area?.trim();
+        if (slug) seen.add(slug);
+      }
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b));
+  }, [state?.items, features]);
 
   const handleGenerate = async () => {
     setLoading(true);
     setDocMarkdown("");
     setUnresolvedCount(0);
+    setCitations([]);
 
     try {
       const resp = await generateDocument(type, area, time);
       setDocMarkdown(resp.document);
       setUnresolvedCount(resp.unresolvedConflictsCount);
+      setCitations(resp.citations || []);
     } catch (e) {
-      setDocMarkdown("Couldn't reach the AI provider. Check your key in Settings ▸ Data & AI.");
+      setDocMarkdown(e instanceof BackendError ? e.toDisplay() : 'Something went wrong.');
     } finally {
       setLoading(false);
     }
@@ -559,9 +639,8 @@ function AuthorView() {
               onChange={(e) => setArea(e.target.value)}
               className="w-full bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-850 px-2.5 py-1.5 rounded text-xs text-stone-800 dark:text-stone-100 select-none focus:outline-none"
             >
-              <option value="auth">🔑 Authentication (auth)</option>
-              <option value="reporting">📊 Reporting Exporter (reporting)</option>
-              <option value="general">💼 General Systems</option>
+              <option value="all">All</option>
+              {areas.map(ar => <option key={ar} value={ar}>{ar}</option>)}
             </select>
           </div>
 
@@ -626,6 +705,20 @@ function AuthorView() {
                 </div>
               )}
               <Markdown>{docMarkdown}</Markdown>
+              {citations.length > 0 && (
+                <div className="pt-3.5 border-t border-stone-200 dark:border-stone-850 flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-mono text-stone-400 uppercase">Citations:</span>
+                  {citations.map((cit, idx) => (
+                    <CitationChip
+                      key={idx}
+                      id={cit.id}
+                      type={cit.type}
+                      title={cit.title}
+                      snippet={cit.snippet}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <div className="h-full flex flex-col items-center justify-center p-8 text-center text-stone-400 space-y-2">
@@ -642,10 +735,11 @@ function AuthorView() {
 }
 
 function SourcesView() {
-  const { state, uploadDocument, resolveIngestItem, connectSource, activeProject } = useProject();
-  const [fileContent, setFileContent] = useState("");
-  const [fileName, setFileName] = useState("");
+  const { state, uploadDocument, connectSource, activeProject, triggerToast, documents, setActiveView } = useProject();
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
+  const [uploadError, setUploadError] = useState<BackendError | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
 
   const connectedTypes = new Set((state?.sources || []).map(s => s.type));
@@ -674,21 +768,36 @@ function SourcesView() {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     const files = e.dataTransfer.files;
-    if (files && files[0]) {
-      const file = files[0];
-      setFileName(file.name);
-      const text = await file.text();
-      setFileContent(text);
-    }
+    if (files && files[0]) pickFile(files[0]);
   };
 
-  const handleSimulatedSubmit = async () => {
-    if (!fileContent.trim()) return;
+  // v1 ingests PDF/DOCX/MD/TXT only (plans/ingestion.md §9) — refuse others up front.
+  const pickFile = (file: File) => {
+    setUploadError(null);
+    if (!isIngestibleFile(file.name)) {
+      setSelectedFile(null);
+      triggerToast(`Can't ingest ${file.name} (unsupported file type). Upload a PDF, DOCX or Markdown file.`);
+      return;
+    }
+    setSelectedFile(file);
+  };
+
+  const handleSubmit = async () => {
+    if (!selectedFile) return;
     setSending(true);
-    await uploadDocument(fileName || "Ingested Document.txt", fileContent);
-    setFileContent("");
-    setFileName("");
-    setSending(false);
+    setUploadError(null);
+    try {
+      await uploadDocument(selectedFile);
+      setSelectedFile(null);
+    } catch (e) {
+      // Keep the file selected so Retry is one click; show problem + cause + fix inline (§7).
+      setUploadError(e instanceof BackendError
+        ? e
+        : new BackendError(`Couldn't upload ${selectedFile.name}`, 'unexpected client error', 'Retry, or check the browser console', 0));
+      if (!(e instanceof BackendError)) console.error(e);
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -702,7 +811,7 @@ function SourcesView() {
               Set up {activeProject ? `“${activeProject.name}”` : 'your project'} — start with your sources
             </h3>
             <p className="text-xs text-stone-600 dark:text-stone-300 mt-0.5 leading-relaxed max-w-2xl">
-              Nexus builds memory from your existing inputs. Connect a source or drop in a file below — extracted
+              Alpha Auctus builds memory from your existing inputs. Connect a source or drop in a file below — extracted
               items are dedup/conflict-checked before they ever reach your board.
             </p>
           </div>
@@ -778,6 +887,11 @@ function SourcesView() {
           <div
             onDragOver={handleDragOver}
             onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); fileInputRef.current?.click(); } }}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload files: documents and PDFs"
             className="border-2 border-dashed border-stone-250 dark:border-stone-800 rounded-[var(--r-lg)] p-8 text-center cursor-pointer hover:border-[var(--accent)] transition-colors select-none bg-stone-50/20 dark:bg-stone-900/15"
           >
             <FolderInput className="w-8 h-8 text-stone-400 mx-auto mb-2" />
@@ -785,55 +899,116 @@ function SourcesView() {
               Drag & Drop file transcript
             </h4>
             <p className="text-[10px] text-stone-500 mt-1">
-              Supports .txt, .json or planning sheets.
+              Supports PDF, DOCX or Markdown.
             </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={INGEST_ACCEPT}
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) pickFile(f); e.target.value = ''; }}
+            />
 
-            {fileName && (
-              <div className="mt-4 p-2.5 rounded bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-left">
-                <span className="font-mono text-xs font-bold font-sans">{fileName}</span>
-                <textarea
-                  value={fileContent}
-                  onChange={(e) => setFileContent(e.target.value)}
-                  rows={4}
-                  className="w-full bg-stone-50 dark:bg-stone-900 border border-stone-150 p-2 text-[11px] rounded font-mono mt-1.5 focus:outline-none"
-                />
+            {selectedFile && (
+              <div onClick={(e) => e.stopPropagation()} className="mt-4 p-2.5 rounded bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-left cursor-default">
+                <span className="font-mono text-xs font-bold font-sans">{selectedFile.name}</span>
+                <span className="ml-2 font-mono text-[10px] text-stone-400">{Math.max(1, Math.round(selectedFile.size / 1024))} KB</span>
                 <button
                   type="button"
-                  onClick={handleSimulatedSubmit}
+                  onClick={handleSubmit}
                   disabled={sending}
                   className="w-full mt-2.5 bg-[var(--accent)] text-white font-semibold rounded p-1.5 text-xs hover:opacity-90 disabled:opacity-40"
                 >
-                  {sending ? 'Extracting…' : 'Parse & dedupe'}
+                  {sending ? 'Extracting…' : uploadError ? 'Retry' : 'Extract features'}
                 </button>
+                {uploadError && (
+                  <div role="alert" className="mt-2.5 p-2.5 rounded-[var(--r-sm)] border border-[var(--border)] bg-[var(--verdict-conf-bg)] text-[11px] leading-relaxed text-[var(--text-primary)] space-y-0.5">
+                    <p className="font-semibold text-[var(--verdict-conf-txt)]">{withPeriod(uploadError.problem)}</p>
+                    <p><span className="text-[var(--text-secondary)]">Cause:</span> {withPeriod(uploadError.cause)}</p>
+                    <p><span className="text-[var(--text-secondary)]">Fix:</span> {withPeriod(uploadError.fix)}</p>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
 
-        {/* Review Extraction Timeline (Section 4.3 Triage queue) */}
         <div className="space-y-4">
-          <div>
-            <h2 className="text-base font-bold text-stone-900 dark:text-stone-50 tracking-tight flex items-center gap-1.5">
-              <span>Ingested Triage Review Queue</span>
-            </h2>
-            <p className="text-xs text-stone-500 dark:text-stone-400">
-              Dedupe planning card extractions before they impact active Kanban boards.
-            </p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-stone-900 dark:text-stone-50 tracking-tight">
+                Documents
+              </h2>
+              <p className="text-xs text-stone-500 dark:text-stone-400">
+                Extraction progress. Stay in Chat for review, or inspect Features here.
+              </p>
+            </div>
+            {documents.some(d => d.status === 'ready') && (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveView('chat')}
+                  className="shrink-0 px-3 py-1.5 rounded-[var(--r-sm)] bg-[var(--accent)] text-white text-xs font-semibold cursor-pointer"
+                >
+                  Open Chat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('features')}
+                  className="shrink-0 px-3 py-1.5 rounded-[var(--r-sm)] border border-stone-200 dark:border-stone-800 text-xs font-semibold text-stone-700 dark:text-stone-200 cursor-pointer"
+                >
+                  Inspect features
+                </button>
+              </div>
+            )}
           </div>
 
-          <div className="space-y-3.5 max-h-[500px] overflow-y-auto pr-2 pb-14">
-            {state?.ingestQueue.map((item) => (
-              <VerdictRow key={item.id} item={item} isIngest={true} />
+          <div className="space-y-2.5 max-h-[500px] overflow-y-auto pr-2 pb-14">
+            {documents.map((doc: MvpDocument) => (
+              <div key={doc.id} className={`p-3.5 rounded-[var(--r-md)] border ${doc.status === 'failed' ? 'border-amber-200 dark:border-amber-900 bg-amber-50/40 dark:bg-amber-950/10' : 'border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-950'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-stone-800 dark:text-stone-100 truncate">{doc.filename}</span>
+                  <span className="text-[10px] font-mono text-stone-400 shrink-0">{progressLabel(doc)}</span>
+                </div>
+                {doc.progress && doc.progress.total > 0 && doc.status !== 'ready' && doc.status !== 'failed' && (
+                  <div className="mt-2 h-1.5 rounded-full bg-stone-200 dark:bg-stone-800 overflow-hidden">
+                    <div className="h-full bg-[var(--accent)]" style={{ width: `${Math.min(100, (doc.progress.done / doc.progress.total) * 100)}%` }} />
+                  </div>
+                )}
+                {doc.status === 'failed' && (
+                  <div className="mt-2 space-y-1.5">
+                    {doc.error && <p className="text-[11px] text-[var(--verdict-conf-txt)]">{doc.error}</p>}
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-[11px] font-semibold text-[var(--accent)] cursor-pointer"
+                    >
+                      Retry — re-upload the same file
+                    </button>
+                  </div>
+                )}
+                {doc.status === 'ready' && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveView('chat')}
+                    className="mt-2 text-[11px] font-semibold text-[var(--accent)] cursor-pointer"
+                  >
+                    Continue in Chat
+                  </button>
+                )}
+              </div>
             ))}
 
-            {state?.ingestQueue.length === 0 && (
+            {documents.length === 0 && (
               <div className="p-8 border rounded-[var(--r-lg)] border-stone-200 dark:border-stone-800 text-center text-stone-400 leading-normal">
                 <Check className="w-6 h-6 text-emerald-500 mx-auto mb-2" />
-                <h4 className="font-semibold text-[13px] text-stone-900 dark:text-stone-200 h2 text-sm max-w-full">
-                  All channels processed.
+                <h4 className="font-semibold text-[13px] text-stone-900 dark:text-stone-200 text-sm">
+                  No documents yet.
                 </h4>
                 <p className="text-[10px] text-stone-500 mt-1">
-                  Connected sources are quiet. New transcript uploads will feed the queue.
+                  Drop a PDF, DOCX or Markdown file to extract features.
                 </p>
               </div>
             )}
@@ -1223,7 +1398,7 @@ function SettingsView() {
   );
 }
 
-function AppShell({ onLogout }: { onLogout: () => void }) {
+function AppShell({ onLogout, sessionName }: { onLogout: () => void; sessionName: string }) {
   const [showCommandBar, setShowCommandBar] = useState(false);
 
   // Trigger command deck listener
@@ -1240,55 +1415,48 @@ function AppShell({ onLogout }: { onLogout: () => void }) {
 
   return (
     <ProjectProvider>
-      <MainLayout showCommandBar={showCommandBar} setShowCommandBar={setShowCommandBar} onLogout={onLogout} />
+      <MainLayout showCommandBar={showCommandBar} setShowCommandBar={setShowCommandBar} onLogout={onLogout} sessionName={sessionName} />
     </ProjectProvider>
   );
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('nexus-authed') === '1';
-    } catch (e) {
-      return false;
-    }
-  });
+  const [authed, setAuthed] = useState<boolean>(() => isAuthed());
+  const [session, setSession] = useState<SessionProfile>(() => resolveSession());
+
+  const handleEnter = (profile: SessionProfile) => {
+    writeSession(profile);
+    writeAuthFlag();
+    setSession(profile);
+    setAuthed(true);
+  };
 
   const handleLogout = () => {
-    try {
-      localStorage.removeItem('nexus-authed');
-    } catch (e) {}
+    clearAuth();
+    setSession(resolveSession());
     setAuthed(false);
   };
 
   if (!authed) {
-    return (
-      <LandingPage
-        onEnter={() => {
-          try {
-            localStorage.setItem('nexus-authed', '1');
-          } catch (e) {}
-          setAuthed(true);
-        }}
-      />
-    );
+    return <LandingPage onEnter={handleEnter} />;
   }
 
-  return <AppShell onLogout={handleLogout} />;
+  return <AppShell onLogout={handleLogout} sessionName={sessionDisplayName(session)} />;
 }
 
 interface MainLayoutProps {
   showCommandBar: boolean;
   setShowCommandBar: (v: boolean) => void;
   onLogout: () => void;
+  sessionName: string;
 }
 
-function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutProps) {
+function MainLayout({ showCommandBar, setShowCommandBar, onLogout, sessionName }: MainLayoutProps) {
   const { theme, setTheme, activeView, setActiveView, state, loading, activeProjectId, setupPhase } = useProject();
 
   // Guided New Project flow is a full-screen takeover — no nav/board chrome.
+  // Fake clarification chat is skipped; after setup we land on the Chat view.
   if (setupPhase === 'setup') return <NewProjectSetup />;
-  if (setupPhase === 'chat') return <ClarificationChat />;
 
   const toggleTheme = () => {
     setTheme(theme === 'dark' ? 'light' : 'dark');
@@ -1300,63 +1468,105 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
     return state.items.filter(i => i.verdict && i.verdict.type !== 'net-new').length + state.ingestQueue.length;
   };
 
-  // Nav mapping
-  const navItems: Array<{ view: 'projects' | 'board' | 'verdicts' | 'memory' | 'impact' | 'author' | 'sources' | 'deprecate' | 'settings'; label: string; icon: any; count?: number }> = [
-    { view: 'projects', label: 'Projects', icon: FolderKanban },
-    { view: 'board', label: 'Board', icon: LayoutDashboard },
-    { view: 'verdicts', label: 'Verdicts', icon: Bell, count: getTriageCount() },
-    { view: 'memory', label: 'Memory', icon: MessageSquare },
-    { view: 'impact', label: 'Impact', icon: Network },
-    { view: 'author', label: 'Author', icon: BookOpen },
-    { view: 'sources', label: 'Sources', icon: FolderInput },
-    { view: 'deprecate', label: 'Deprecate', icon: Trash2 },
-    { view: 'settings', label: 'Settings', icon: Settings }
+  // The Reviews queue: agent implementations awaiting requirement validation (§4.13).
+  const getReviewCount = () => {
+    if (!state) return 0;
+    return buildReviews(state.items, state.agents).filter(r => r.overall !== 'all-met').length;
+  };
+
+  // Left nav grouped by lifecycle phase (spec §3): PLAN → BUILD → VERIFY → KNOWLEDGE.
+  type NavView = 'projects' | 'chat' | 'board' | 'verdicts' | 'runs' | 'reviews' | 'delivery' | 'memory' | 'impact' | 'author' | 'sources' | 'features' | 'deprecate' | 'settings';
+  type NavItem = { view: NavView; label: string; icon: any; count?: number };
+  const navGroups: Array<{ phase: string | null; items: NavItem[] }> = [
+    { phase: null, items: [
+      { view: 'projects', label: 'Projects', icon: FolderKanban },
+    ]},
+    { phase: 'Plan', items: [
+      { view: 'chat', label: 'Chat', icon: MessagesSquare },
+      { view: 'board', label: 'Board', icon: LayoutDashboard },
+      { view: 'verdicts', label: 'Verdicts', icon: Bell, count: getTriageCount() },
+    ]},
+    { phase: 'Build', items: [
+      { view: 'runs', label: 'Runs', icon: Cog },
+    ]},
+    { phase: 'Verify', items: [
+      { view: 'reviews', label: 'Reviews', icon: CheckCircle2, count: getReviewCount() },
+      { view: 'delivery', label: 'Delivery', icon: Rocket },
+    ]},
+    { phase: 'Knowledge', items: [
+      { view: 'memory', label: 'Memory', icon: MessageSquare },
+      { view: 'impact', label: 'Trace', icon: Network },
+      { view: 'author', label: 'Author', icon: BookOpen },
+      { view: 'sources', label: 'Sources', icon: FolderInput },
+      { view: 'features', label: 'Features', icon: Layers },
+      { view: 'deprecate', label: 'Deprecate', icon: Trash2 },
+    ]},
   ];
 
   return (
-    <div className="min-h-screen bg-[var(--bg-app)] text-[var(--text-primary)] flex">
+    <div className="h-screen overflow-hidden bg-[var(--bg-app)] text-[var(--text-primary)] flex">
       {/* Side collapsible nav */}
-      <aside className="w-64 border-r border-stone-200/50 dark:border-stone-850/50 flex flex-col justify-between shrink-0 bg-stone-50/50 dark:bg-stone-950/40 select-none hidden md:flex">
-        <div className="p-4 space-y-6">
+      <aside className="w-64 h-full min-h-0 border-r border-stone-200/50 dark:border-stone-850/50 flex flex-col shrink-0 bg-stone-50/50 dark:bg-stone-950/40 select-none hidden md:flex">
+        <div className="p-4 space-y-6 flex-1 min-h-0 overflow-y-auto">
           {/* Logo Brand */}
           <div className="flex items-center gap-2 px-1">
             <span className="p-1.5 px-2 bg-[var(--accent)] text-white font-mono text-sm rounded font-bold">
-              N
+              A
             </span>
             <div>
-              <span className="font-sans font-semibold tracking-tight block text-base text-stone-900 dark:text-white leading-none">Nexus</span>
-              <span className="text-[9px] text-stone-400 font-mono block tracking-widest mt-0.5">DECISION MEMORY</span>
+              <span className="font-sans font-semibold tracking-tight block text-base text-stone-900 dark:text-white leading-none">Alpha Auctus</span>
+              <span className="text-[9px] text-stone-400 font-mono block tracking-widest mt-0.5">SOFTWARE DELIVERY</span>
             </div>
           </div>
 
-          <nav className="space-y-1">
-            {navItems.map(item => {
-              const Icon = item.icon;
-              const isActive = activeView === item.view;
-
-              return (
-                <button
-                  key={item.view}
-                  onClick={() => { setActiveView(item.view); }}
-                  className={`w-full flex items-center justify-between p-2 rounded-[var(--r-sm)] text-[12.5px] font-medium transition-colors cursor-pointer ${isActive ? 'bg-[var(--accent-bg)] text-[var(--accent)] font-bold' : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-900'}`}
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <Icon className="w-4 h-4 shrink-0" />
-                    <span className="truncate">{item.label}</span>
+          <nav className="space-y-3">
+            {navGroups.map((group, gi) => (
+              <div key={gi} className="space-y-0.5">
+                {/* Quiet phase label — a section header, not clickable (spec §3) */}
+                {group.phase && (
+                  <div className="px-2 pt-1.5 pb-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-stone-400 dark:text-stone-500 select-none">
+                    {group.phase}
                   </div>
-                  {item.count !== undefined && item.count > 0 && (
-                    <span className="bg-red-500 text-white rounded-full text-[9px] font-bold px-1.5 py-0.2 shrink-0">
-                      {item.count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+                )}
+                {group.items.map(item => {
+                  const Icon = item.icon;
+                  const isActive = activeView === item.view;
+                  return (
+                    <button
+                      key={item.view}
+                      onClick={() => { setActiveView(item.view); }}
+                      className={`w-full flex items-center justify-between p-2 rounded-[var(--r-sm)] text-[12.5px] font-medium transition-colors cursor-pointer ${isActive ? 'bg-[var(--accent-bg)] text-[var(--accent)] font-bold' : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-900'}`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </div>
+                      {item.count !== undefined && item.count > 0 && (
+                        <span className="bg-red-500 text-white rounded-full text-[9px] font-bold px-1.5 py-0.2 shrink-0">
+                          {item.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+
+            {/* Settings sits below the phase groups */}
+            <div className="pt-2 mt-2 border-t border-stone-200 dark:border-stone-850">
+              <button
+                onClick={() => setActiveView('settings')}
+                className={`w-full flex items-center gap-2.5 p-2 rounded-[var(--r-sm)] text-[12.5px] font-medium transition-colors cursor-pointer ${activeView === 'settings' ? 'bg-[var(--accent-bg)] text-[var(--accent)] font-bold' : 'text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-900'}`}
+              >
+                <Settings className="w-4 h-4 shrink-0" />
+                <span className="truncate">Settings</span>
+              </button>
+            </div>
           </nav>
         </div>
 
         {/* Audit Lock posture info */}
-        <div className="p-4 border-t border-stone-200 dark:border-stone-850 space-y-2.5">
+        <div className="p-4 border-t border-stone-200 dark:border-stone-850 space-y-2.5 shrink-0">
           <div className="p-2.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] leading-snug font-sans flex items-start gap-1.5">
             <Lock className="w-3.5 h-3.5 shrink-0 mt-0.5" />
             <span>
@@ -1374,6 +1584,10 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
             </button>
           </div>
 
+          <p className="text-xs text-stone-500 dark:text-stone-400 truncate px-0.5" title={sessionName}>
+            {sessionName}
+          </p>
+
           <button
             onClick={onLogout}
             className="w-full flex items-center justify-center gap-2 p-2 rounded-[var(--r-sm)] border border-stone-200 dark:border-stone-800 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-900 hover:text-red-600 dark:hover:text-red-400 cursor-pointer transition-colors"
@@ -1385,7 +1599,7 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
       </aside>
 
       {/* Main Workspace Frame */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden">
+      <main className="flex-1 flex flex-col min-h-0 h-full overflow-hidden">
         
         {/* Global master header */}
         <header className="border-b border-stone-200/50 dark:border-stone-850/50 px-6 py-4 flex items-center justify-between shrink-0 bg-[var(--bg-app)] z-10 backdrop-blur-md">
@@ -1413,16 +1627,32 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
               </kbd>
             </button>
 
-            {/* Ingress triage inbox bell indicator */}
+            {/* The product's two triage queues (spec §3): task Verdicts + agent Reviews */}
             <button
               onClick={() => setActiveView('verdicts')}
-              className="p-1 px-2.5 rounded border border-stone-200 dark:border-stone-800 hover:bg-stone-150 text-stone-600 dark:text-stone-300 relative text-xs flex items-center gap-1 cursor-pointer"
-              title="Inbox items"
+              className="p-1 px-2.5 rounded border border-stone-200 dark:border-stone-800 hover:bg-stone-150 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 relative text-xs flex items-center gap-1.5 cursor-pointer"
+              title="Task verdicts — conflicts & duplicates awaiting confirmation"
             >
               <Bell className="w-4 h-4" />
-              <span>Inbox</span>
+              <span className="hidden lg:inline">Verdicts</span>
               {getTriageCount() > 0 && (
-                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500" />
+                <span className="ml-0.5 min-w-[16px] text-center bg-red-500 text-white rounded-full text-[9px] font-bold px-1 py-0.2">
+                  {getTriageCount()}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setActiveView('reviews')}
+              className="p-1 px-2.5 rounded border border-stone-200 dark:border-stone-800 hover:bg-stone-150 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 relative text-xs flex items-center gap-1.5 cursor-pointer"
+              title="Reviews — agent implementations awaiting requirement validation"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span className="hidden lg:inline">Reviews</span>
+              {getReviewCount() > 0 && (
+                <span className="ml-0.5 min-w-[16px] text-center bg-[var(--accent)] text-white rounded-full text-[9px] font-bold px-1 py-0.2">
+                  {getReviewCount()}
+                </span>
               )}
             </button>
             
@@ -1435,12 +1665,14 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
           </div>
         </header>
 
-        {/* Master Content View Port */}
-        <div className="flex-1 overflow-y-auto p-6 max-h-[calc(100vh-64px)] relative">
+        {activeProjectId && activeView !== 'projects' && <WorkflowStepper />}
+
+        {/* Master Content View Port — chat owns its own scroll; other views scroll here */}
+        <div className={`flex-1 min-h-0 relative p-6 ${activeView === 'chat' ? 'overflow-hidden flex flex-col' : 'overflow-y-auto'}`}>
           
           {activeView === 'projects' || !activeProjectId ? (
             <ProjectsView />
-          ) : loading ? (
+          ) : loading && activeView !== 'chat' ? (
             <div className="h-full flex flex-col items-center justify-center space-y-2 text-stone-400">
               <div className="w-6 h-6 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
               <p className="font-mono text-xs">Loading your board…</p>
@@ -1453,14 +1685,19 @@ function MainLayout({ showCommandBar, setShowCommandBar, onLogout }: MainLayoutP
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.15 }}
-                className="h-full"
+                className={activeView === 'chat' ? 'flex-1 min-h-0 flex flex-col' : 'h-full min-h-0'}
               >
                 {activeView === 'board' && <DashboardView />}
                 {activeView === 'verdicts' && <VerdictsView />}
+                {activeView === 'runs' && <RunsView />}
+                {activeView === 'reviews' && <ReviewsView />}
+                {activeView === 'delivery' && <DeliveryView />}
                 {activeView === 'memory' && <AskView />}
                 {activeView === 'impact' && <ImpactGraph />}
                 {activeView === 'author' && <AuthorView />}
+                {activeView === 'chat' && <ProjectChat />}
                 {activeView === 'sources' && <SourcesView />}
+                {activeView === 'features' && <FeaturesView />}
                 {activeView === 'deprecate' && <DeprecateView />}
                 {activeView === 'settings' && <SettingsView />}
               </motion.div>

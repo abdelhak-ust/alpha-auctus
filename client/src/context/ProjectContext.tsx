@@ -1,10 +1,66 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { DBState, Item, Decision, VerdictType, WebSource, IngestItem, ProjectSummary, Priority, Status, Agent, AgentKind, NewProjectDraft, DraftSource, ClarificationTurn } from '../types.js';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { AskResponse, AskTurn, AuthorResponse, AuthorTimeFrame, DBState, Item, Decision, WebSource, MvpDocument, Feature, FeaturePatch, GeneratedTask, ClarificationState, ClarificationAnswerResponse, AgentActivity, ProjectSummary, Agent, AgentKind, NewProjectDraft, ClarificationTurn, ChatMessage, GenerationMode, VerdictDetail } from '../types.js';
+import {
+  BackendError, DOC_RUNNING, answerClarification as apiAnswer, askAboutItem, askProjectMemory, authorDocument, checkItemVerdict, generateTasks as apiGenerateTasks,
+  getClarification, getDocumentMarkdown, getFeatureActivity, getWorkflow, isIngestibleFile, listDocuments,
+  listFeatures, patchFeature as apiPatchFeature, patchTask, skipClarification as apiSkip,
+  skipRemainingClarification as apiSkipRemaining, uploadDocument as apiUpload,
+} from '../lib/backend.js';
 
-type ViewName = 'board' | 'verdicts' | 'memory' | 'impact' | 'author' | 'sources' | 'deprecate' | 'settings' | 'projects';
+type ViewName = 'board' | 'verdicts' | 'runs' | 'reviews' | 'delivery' | 'memory' | 'impact' | 'author' | 'sources' | 'features' | 'chat' | 'deprecate' | 'settings' | 'projects';
 
-// Phases of the guided New Project takeover (§4.10 → §4.11). 'idle' = normal app.
-type SetupPhase = 'idle' | 'setup' | 'chat';
+// Phases of the guided New Project takeover. 'idle' = normal app. Fake setup chat is skipped.
+type SetupPhase = 'idle' | 'setup';
+
+const genModeKey = (projectId: string, kind: 'feature' | 'task') => `nexus-gen-mode-${kind}-${projectId}`;
+
+function readGenMode(projectId: string, kind: 'feature' | 'task'): GenerationMode | null {
+  try {
+    const v = sessionStorage.getItem(genModeKey(projectId, kind));
+    if (v === 'auto' || v === 'review_as_you_go') return v;
+  } catch { /* private mode / blocked storage */ }
+  return null;
+}
+
+function writeGenMode(projectId: string, kind: 'feature' | 'task', mode: GenerationMode) {
+  try { sessionStorage.setItem(genModeKey(projectId, kind), mode); } catch { /* ignore */ }
+}
+
+function withTaskDefaults(task: GeneratedTask): GeneratedTask {
+  return {
+    ...task,
+    subtasks: task.subtasks ?? [],
+    definitionOfDone: task.definitionOfDone ?? [],
+    acceptanceCriteria: task.acceptanceCriteria ?? [],
+  };
+}
+
+function withFeatureDefaults(feature: Feature): Feature {
+  return {
+    ...feature,
+    reviewStatus: feature.reviewStatus ?? 'pending',
+    tasks: (feature.tasks ?? []).map(withTaskDefaults),
+  };
+}
+
+function composeBoardDescription(task: GeneratedTask): string {
+  const subtasks = task.subtasks ?? [];
+  const criteria = task.acceptanceCriteria ?? [];
+  const done = task.definitionOfDone ?? [];
+  const lines = [
+    task.description?.trim() ?? '',
+    '',
+    '## Subtasks',
+    ...subtasks.map(step => `- [ ] ${step}`),
+    '',
+    '## Acceptance criteria',
+    ...criteria.map(ac => `Given ${ac.given} When ${ac.when} Then ${ac.then}`),
+    '',
+    '## Definition of done',
+    ...done.map(item => `- ${item}`),
+  ];
+  return lines.join('\n').trim();
+}
 
 const emptyDraft = (): NewProjectDraft => ({ name: '', description: '', github: '', sources: [], answers: [] });
 
@@ -26,12 +82,12 @@ interface ProjectContextType {
   deleteProject: (id: string) => Promise<void>;
   connectSource: (type: WebSource['type'], name: string) => Promise<void>;
 
-  // Guided New Project flow (§4.10–4.11)
+  // Guided New Project flow — create + upload, then land on Chat (no fake Q&A).
   setupPhase: SetupPhase;
   setupDraft: NewProjectDraft;
   startNewProjectSetup: () => void;
   cancelSetup: () => void;
-  beginClarification: (draft: NewProjectDraft) => void;
+  completeProjectSetup: (draft: NewProjectDraft, files?: File[]) => Promise<void>;
   finishSetupAndGenerate: (answers: ClarificationTurn[]) => Promise<void>;
 
   // Workspace-wide AI agent catalog
@@ -44,11 +100,35 @@ interface ProjectContextType {
   resolveVerdict: (id: number, action: 'confirm' | 'dismiss' | 'supersede' | 'merge', targetId?: string) => Promise<void>;
   addDecision: (dec: Partial<Decision>) => Promise<Decision>;
   updateConfig: (cfg: Partial<DBState['apiConfig']>) => Promise<void>;
-  askQuestion: (q: string, activeItemId?: number) => Promise<{ answer: string; citations: any[] }>;
-  generateDocument: (type: 'brd' | 'spec' | 'tree', area: string, timeFrame: string) => Promise<{ document: string; unresolvedConflictsCount: number; conflicts: any[] }>;
+  askQuestion: (q: string, itemId?: number, history?: AskTurn[]) => Promise<AskResponse>;
+  generateDocument: (type: 'brd' | 'spec' | 'tree', area: string, timeFrame: string) => Promise<AuthorResponse>;
   getDeprecations: () => Promise<any[]>;
-  uploadDocument: (name: string, content: string) => Promise<void>;
+  uploadDocument: (file: File) => Promise<MvpDocument | null>;
   resolveIngestItem: (id: string, action: 'approve' | 'dismiss') => Promise<void>;
+  documents: MvpDocument[];
+  features: Feature[];
+  clarification: ClarificationState | null;
+  workflowHistory: ChatMessage[];
+  featureActivity: Record<string, AgentActivity[]>;
+  featureMarkdown: Record<string, string>;
+  featureGenMode: GenerationMode | null;
+  taskGenMode: GenerationMode | null;
+  setFeatureGenMode: (mode: GenerationMode) => void;
+  setTaskGenMode: (mode: GenerationMode) => void;
+  refreshFeatures: () => Promise<void>;
+  loadFeatureExtras: (featureId: string, documentId: string) => Promise<void>;
+  answerClarification: (questionId: string, answer: string) => Promise<ClarificationAnswerResponse>;
+  skipClarification: (questionId: string) => Promise<ClarificationAnswerResponse>;
+  skipRemainingQuestions: (featureId: string) => Promise<ClarificationAnswerResponse>;
+  updateFeature: (featureId: string, body: FeaturePatch) => Promise<Feature | null>;
+  approveFeature: (featureId: string) => Promise<void>;
+  rejectFeature: (featureId: string) => Promise<void>;
+  generateFeatureTasks: (featureId: string) => Promise<void>;
+  generateApprovedFeatureTasks: () => Promise<void>;
+  approveTask: (taskId: string) => Promise<void>;
+  approveAllDraftTasks: (featureId?: string) => Promise<void>;
+  addTaskToBoard: (taskId: string) => Promise<void>;
+  addAllApprovedToBoard: () => Promise<void>;
   selectedCardId: number | null;
   setSelectedCardId: (id: number | null) => void;
   activeView: ViewName;
@@ -77,12 +157,32 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Guided New Project takeover state
   const [setupPhase, setSetupPhase] = useState<SetupPhase>('idle');
   const [setupDraft, setSetupDraft] = useState<NewProjectDraft>(emptyDraft());
+  // The File objects behind setupDraft.sources (DraftSource only carries metadata).
+  const setupFilesRef = useRef<File[]>([]);
+
+  const [documents, setDocuments] = useState<MvpDocument[]>([]);
+  const [features, setFeatures] = useState<Feature[]>([]);
+  const [clarification, setClarification] = useState<ClarificationState | null>(null);
+  const [workflowHistory, setWorkflowHistory] = useState<ChatMessage[]>([]);
+  const [featureActivity, setFeatureActivity] = useState<Record<string, AgentActivity[]>>({});
+  const [featureMarkdown, setFeatureMarkdown] = useState<Record<string, string>>({});
+  const [featureGenMode, setFeatureGenModeState] = useState<GenerationMode | null>(null);
+  const [taskGenMode, setTaskGenModeState] = useState<GenerationMode | null>(null);
 
   const triggerToast = (msg: string, undoAction?: () => void) => {
     setToast({ message: msg, visible: true, undo: undoAction });
     setTimeout(() => {
       setToast(prev => prev && prev.message === msg ? { ...prev, visible: false } : prev);
     }, 6000);
+  };
+
+  const showBackendError = (e: unknown, fallbackProblem: string) => {
+    if (e instanceof BackendError) {
+      triggerToast(e.toDisplay());
+    } else {
+      console.error(fallbackProblem, e);
+      triggerToast(`${fallbackProblem} (unexpected client error). Retry, or check the browser console.`);
+    }
   };
 
   const setTheme = (t: 'light' | 'dark') => {
@@ -167,54 +267,54 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const cancelSetup = () => {
     setSetupPhase('idle');
     setSetupDraft(emptyDraft());
+    setupFilesRef.current = [];
     // If there's no project to fall back to, keep the user on the projects list.
     if (!activeProjectId) setActiveView('projects');
   };
 
-  const beginClarification = (draft: NewProjectDraft) => {
-    setSetupDraft(draft);
-    setSetupPhase('chat');
-  };
-
-  const finishSetupAndGenerate = async (answers: ClarificationTurn[]) => {
-    const draft: NewProjectDraft = { ...setupDraft, answers };
+  const finishSetupAndGenerate = async (answers: ClarificationTurn[], draftOverride?: NewProjectDraft) => {
+    const draft: NewProjectDraft = { ...(draftOverride || setupDraft), answers };
 
     // 1. Create the project (setup flow owns navigation, so route:false).
     const proj = await createProject(draft.name.trim() || 'Untitled project', { route: false });
 
-    // 2. Assemble everything the AI can actually read into one ingestion blob.
-    //    Only text is real; video/image are represented by their filenames so
-    //    they still influence extraction (real transcription/OCR is deferred).
-    const textFiles = draft.sources.filter(s => s.content).map(s => `# ${s.name}\n${s.content}`);
-    const media = draft.sources.filter(s => !s.content).map(s => `- ${s.kind}: ${s.name}`);
+    // 2. Assemble the setup brief (description, GitHub URL, media names) as a
+    //    Markdown document so it enters the same ingestion pipeline as every
+    //    other file. Video/image are listed by name only (transcription/OCR is out of v1).
+    const media = draft.sources.filter(s => s.kind !== 'file').map(s => `- ${s.kind}: ${s.name}`);
     const qa = draft.answers.map(t => `Q: ${t.question}\nA: ${t.answer}`);
-    const assembled = [
-      `Project: ${draft.name}`,
+    const brief = [
+      `# ${draft.name}`,
       `\n## Description\n${draft.description}`,
       draft.github ? `\n## GitHub\n${draft.github} (analysis deferred)` : '',
-      media.length ? `\n## Media sources (pending ingest)\n${media.join('\n')}` : '',
-      textFiles.length ? `\n## Uploaded documents\n${textFiles.join('\n\n')}` : '',
+      media.length ? `\n## Media sources (not yet ingested)\n${media.join('\n')}` : '',
       qa.length ? `\n## Clarifications\n${qa.join('\n\n')}` : ''
     ].filter(Boolean).join('\n');
+    const briefFile = new File([brief], `${(draft.name.trim() || 'Untitled project').replace(/[\\/:*?"<>|]+/g, '-')} — setup brief.md`, { type: 'text/markdown' });
 
-    // 3. Push through the existing ingestion + verdict pipeline (mock or live).
-    try {
-      await fetch('/api/sources/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: `${draft.name} — setup brief`, fileContent: assembled, projectId: proj.id })
-      });
-    } catch (e) {
-      console.error('Task generation upload failed', e);
-    }
-
-    // 4. Land in the verdict review queue (Sources view) to confirm generated tasks.
+    // 3. Land on Chat with ingest already running. Fake clarification Q&A is skipped.
+    const docs = setupFilesRef.current.filter(f => isIngestibleFile(f.name));
+    setupFilesRef.current = [];
     setSetupPhase('idle');
     setSetupDraft(emptyDraft());
     await refreshState();
     await fetchProjects();
-    setActiveView('sources');
-    triggerToast(`Generated tasks for "${proj.name}". Review them before they hit the board.`);
+    setActiveView('chat');
+    triggerToast(`Created "${proj.name}". I'm reading your sources in Chat.`);
+
+    // 4. Upload the brief + the project documents to backend/ through the same
+    //    path as the Sources view; each one's outcome is toasted as it lands.
+    void (async () => {
+      for (const file of [briefFile, ...docs]) {
+        await ingestFile(proj.id, file);
+      }
+    })();
+  };
+
+  const completeProjectSetup = async (draft: NewProjectDraft, files: File[] = []) => {
+    setupFilesRef.current = files;
+    setSetupDraft(draft);
+    await finishSetupAndGenerate(draft.answers || [], draft);
   };
 
   const deleteProject = async (id: string): Promise<void> => {
@@ -305,6 +405,74 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return () => clearInterval(timer);
   }, [activeProjectId]);
 
+  const quietNetNew = (): VerdictDetail => ({
+    type: 'net-new',
+    confidence: 100,
+    message: 'Net-new — nothing like this yet',
+    candidates: [],
+  });
+
+  const otherBoardItems = (excludeId: number) =>
+    (state?.items ?? [])
+      .filter(i => i.id !== excludeId)
+      .map(i => ({
+        id: i.id,
+        title: i.title,
+        description: i.description,
+        area: i.area,
+        status: i.status,
+      }));
+
+  const saveItem = async (id: number, fields: Partial<Item>): Promise<Item> => {
+    let oldItem: Item | undefined;
+    setState(prev => {
+      if (!prev) return null;
+      oldItem = prev.items.find(i => i.id === id);
+      return {
+        ...prev,
+        items: prev.items.map(i => i.id === id ? { ...i, ...fields } : i),
+      };
+    });
+
+    try {
+      const res = await fetch(`/api/items/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...fields, projectId: activeProjectId }),
+      });
+      const updated = await res.json();
+      setState(prev => {
+        if (!prev) return null;
+        return { ...prev, items: prev.items.map(i => i.id === id ? updated : i) };
+      });
+      return updated;
+    } catch (e) {
+      if (oldItem) {
+        setState(prev => {
+          if (!prev) return null;
+          return { ...prev, items: prev.items.map(i => i.id === id ? oldItem! : i) };
+        });
+      }
+      throw e;
+    }
+  };
+
+  const applyVerdictCheck = async (item: Item): Promise<Item> => {
+    if (!activeProjectId) return item;
+    let verdict: VerdictDetail;
+    try {
+      verdict = await checkItemVerdict(
+        activeProjectId,
+        { id: item.id, title: item.title, description: item.description, area: item.area },
+        otherBoardItems(item.id),
+      );
+    } catch (e) {
+      showBackendError(e, "Couldn't check this card against the board");
+      verdict = quietNetNew();
+    }
+    return saveItem(item.id, { verdict });
+  };
+
   const addItem = async (itemFields: Partial<Item>): Promise<Item> => {
     // Optimistic UI insert to make it "spreadsheet-fast"
     const tempId = Date.now();
@@ -349,6 +517,11 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
         };
       });
       triggerToast(`Added card "${realItem.title.slice(0, 20)}..."`);
+      try {
+        await applyVerdictCheck(realItem);
+      } catch (e) {
+        showBackendError(e, "Couldn't save the verdict");
+      }
       return realItem;
     } catch (e) {
       // Revert optimistic insert
@@ -358,39 +531,29 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const updateItem = async (id: number, fields: Partial<Item>): Promise<Item> => {
-    let oldItem: Item | undefined;
-    if (state) {
-      oldItem = state.items.find(i => i.id === id);
-      setState({
-        ...state,
-        items: state.items.map(i => i.id === id ? { ...i, ...fields } : i)
-      });
-    }
+    const current = state?.items.find(i => i.id === id);
+    const titleChanged = fields.title !== undefined && fields.title !== current?.title;
+    const descriptionChanged = fields.description !== undefined && fields.description !== current?.description;
+    const needsRecheck = titleChanged || descriptionChanged;
+    const payload = needsRecheck
+      ? {
+          ...fields,
+          verdict: {
+            type: 'checking' as const,
+            confidence: 100,
+            message: 'Re-checking decisions...',
+            candidates: [],
+          },
+        }
+      : fields;
 
+    const updated = await saveItem(id, payload);
+    if (!needsRecheck) return updated;
     try {
-      const res = await fetch(`/api/items/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...fields, projectId: activeProjectId })
-      });
-      const updated = await res.json();
-      setState(prev => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          items: prev.items.map(i => i.id === id ? updated : i)
-        };
-      });
-      return updated;
+      return await applyVerdictCheck(updated);
     } catch (e) {
-      // Revert
-      if (oldItem && state) {
-        setState({
-          ...state,
-          items: state.items.map(i => i.id === id ? oldItem! : i)
-        });
-      }
-      throw e;
+      showBackendError(e, "Couldn't save the verdict");
+      return updated;
     }
   };
 
@@ -467,22 +630,61 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  const askQuestion = async (q: string, activeItemId?: number) => {
-    const res = await fetch('/api/ask', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q, activeItemId, projectId: activeProjectId })
+  const askQuestion = async (q: string, itemId?: number, history: AskTurn[] = []): Promise<AskResponse> => {
+    if (!activeProjectId) {
+      throw new BackendError('No project', 'none selected', 'Open a project', 0);
+    }
+    if (itemId != null) {
+      const item = state?.items.find(i => i.id === itemId);
+      return askAboutItem(activeProjectId, {
+        query: q,
+        boardItemId: itemId,
+        item: {
+          title: item?.title ?? '',
+          description: item?.description ?? '',
+          area: item?.area ?? '',
+          priority: item?.priority ?? 'P2',
+        },
+        history,
+      });
+    }
+    return askProjectMemory(activeProjectId, {
+      query: q,
+      history,
+      boardItems: (state?.items ?? []).map(i => ({
+        id: i.id,
+        title: i.title,
+        description: i.description,
+        area: i.area,
+        status: i.status,
+      })),
     });
-    return await res.json();
   };
 
   const generateDocument = async (type: 'brd' | 'spec' | 'tree', area: string, timeFrame: string) => {
-    const res = await fetch('/api/author', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, area, timeFrame, projectId: activeProjectId })
+    if (!activeProjectId) {
+      throw new BackendError('No project', 'none selected', 'Open a project', 0);
+    }
+    return authorDocument(activeProjectId, {
+      type,
+      area,
+      timeFrame: timeFrame as AuthorTimeFrame,
+      boardItems: (state?.items ?? []).map(i => ({
+        id: i.id,
+        title: i.title,
+        description: i.description,
+        area: i.area,
+        status: i.status,
+        createdAt: i.created_at,
+        ...(i.verdict?.type ? { verdictType: i.verdict.type } : {}),
+      })),
+      decisions: (state?.decisions ?? []).map(d => ({
+        id: d.id,
+        title: d.title,
+        description: d.description,
+        area: d.area,
+      })),
     });
-    return await res.json();
   };
 
   const getDeprecations = async () => {
@@ -495,14 +697,92 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return data.suggestions;
   };
 
-  const uploadDocument = async (name: string, content: string) => {
-    await fetch('/api/sources/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileName: name, fileContent: content, projectId: activeProjectId })
-    });
-    await refreshState();
-    triggerToast(`Uploaded and ingested ${name}`);
+  const refreshMvp = async (projectId: string) => {
+    try {
+      const [docs, feats] = await Promise.all([listDocuments(projectId), listFeatures(projectId)]);
+      setDocuments(docs);
+      setFeatures(feats.map(withFeatureDefaults));
+      return docs;
+    } catch (e) {
+      if (e instanceof BackendError && e.status === 0) return [];
+      throw e;
+    }
+  };
+
+  const refreshFeatures = async () => {
+    if (!activeProjectId) return;
+    try {
+      const [feats, clar, wf] = await Promise.all([
+        listFeatures(activeProjectId),
+        getClarification(activeProjectId).catch(() => null),
+        getWorkflow(activeProjectId).catch(() => null),
+      ]);
+      setFeatures(feats.map(withFeatureDefaults));
+      if (clar) setClarification(clar);
+      if (wf) setWorkflowHistory(wf.history);
+      else if (clar) setWorkflowHistory(clar.history);
+    } catch (e) {
+      showBackendError(e, "Couldn't load features");
+    }
+  };
+
+  const setFeatureGenMode = (mode: GenerationMode) => {
+    setFeatureGenModeState(mode);
+    if (activeProjectId) writeGenMode(activeProjectId, 'feature', mode);
+  };
+
+  const setTaskGenMode = (mode: GenerationMode) => {
+    setTaskGenModeState(mode);
+    if (activeProjectId) writeGenMode(activeProjectId, 'task', mode);
+  };
+
+  const loadFeatureExtras = async (featureId: string, documentId: string) => {
+    if (!activeProjectId) return;
+    try {
+      const [activity, md] = await Promise.all([
+        getFeatureActivity(activeProjectId, featureId),
+        featureMarkdown[documentId]
+          ? Promise.resolve(null)
+          : getDocumentMarkdown(activeProjectId, documentId).catch(() => null),
+      ]);
+      setFeatureActivity(prev => ({ ...prev, [featureId]: activity }));
+      if (md) setFeatureMarkdown(prev => ({ ...prev, [documentId]: md.markdown }));
+    } catch { /* extras are optional for the card */ }
+  };
+
+  const ingestFile = async (projectId: string, file: File, opts: { throwOnError?: boolean } = {}): Promise<MvpDocument | null> => {
+    if (!isIngestibleFile(file.name)) {
+      const err = new BackendError(`Can't ingest ${file.name}`, 'unsupported file type', 'Upload a PDF, DOCX or Markdown file', 415);
+      if (opts.throwOnError) throw err;
+      triggerToast(err.toDisplay());
+      return null;
+    }
+    let doc: MvpDocument;
+    try {
+      doc = await apiUpload(projectId, file);
+    } catch (e) {
+      if (opts.throwOnError) throw e;
+      showBackendError(e, `Couldn't upload ${file.name}`);
+      return null;
+    }
+    if (doc.status === 'failed') {
+      triggerToast(`Couldn't extract ${doc.filename} (${(doc.error || 'no cause').trim()}). Fix and retry.`);
+      await refreshMvp(projectId);
+      return doc;
+    }
+    if (doc.duplicate && doc.status === 'ready') {
+      triggerToast(`${doc.filename} was already extracted — nothing new.`);
+      await refreshMvp(projectId);
+      return doc;
+    }
+    triggerToast(doc.duplicate ? `${doc.filename} is already processing…` : `Uploaded ${doc.filename} — extracting…`);
+    await refreshMvp(projectId);
+    return doc;
+  };
+
+  const uploadDocument = async (file: File): Promise<MvpDocument | null> => {
+    if (!activeProjectId) return null;
+    return ingestFile(activeProjectId, file, { throwOnError: true });
   };
 
   const resolveIngestItem = async (id: string, action: 'approve' | 'dismiss') => {
@@ -515,11 +795,169 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     triggerToast(action === 'approve' ? `Approved and moved to Board inbox.` : `Dismissed ingestion item.`);
   };
 
+  const answerClarificationFn = async (questionId: string, answer: string) => {
+    if (!activeProjectId) throw new BackendError('No project', 'none selected', 'Open a project', 0);
+    const res = await apiAnswer(activeProjectId, questionId, answer);
+    await refreshFeatures();
+    return res;
+  };
+
+  const skipClarificationFn = async (questionId: string) => {
+    if (!activeProjectId) throw new BackendError('No project', 'none selected', 'Open a project', 0);
+    const res = await apiSkip(activeProjectId, questionId);
+    await refreshFeatures();
+    return res;
+  };
+
+  const skipRemainingFn = async (featureId: string) => {
+    if (!activeProjectId) throw new BackendError('No project', 'none selected', 'Open a project', 0);
+    const res = await apiSkipRemaining(activeProjectId, featureId);
+    await refreshFeatures();
+    return res;
+  };
+
+  const updateFeature = async (featureId: string, body: FeaturePatch): Promise<Feature | null> => {
+    if (!activeProjectId) return null;
+    try {
+      const updated = await apiPatchFeature(activeProjectId, featureId, body);
+      await refreshFeatures();
+      return updated;
+    } catch (e) {
+      if (e instanceof BackendError && e.status === 409) {
+        triggerToast('Approve is blocked until every open question is answered or skipped.');
+      } else {
+        showBackendError(e, "Couldn't update the feature");
+      }
+      throw e;
+    }
+  };
+
+  const approveFeature = async (featureId: string) => {
+    await updateFeature(featureId, { reviewStatus: 'approved' });
+    const name = features.find(f => f.id === featureId)?.name || 'feature';
+    triggerToast(`Approved “${name}”.`);
+  };
+
+  const rejectFeature = async (featureId: string) => {
+    await updateFeature(featureId, { reviewStatus: 'rejected' });
+    const name = features.find(f => f.id === featureId)?.name || 'feature';
+    triggerToast(`Rejected “${name}” — it won't get tasks.`);
+  };
+
+  const generateFeatureTasks = async (featureId: string) => {
+    if (!activeProjectId) return;
+    await apiGenerateTasks(activeProjectId, featureId);
+    triggerToast('Generating tasks…');
+    await refreshFeatures();
+  };
+
+  const generateApprovedFeatureTasks = async () => {
+    if (!activeProjectId) return;
+    const ready = features.filter(f =>
+      (f.reviewStatus ?? 'pending') === 'approved' && f.tasks.length === 0 && f.status !== 'planning'
+    );
+    for (const f of ready) {
+      await apiGenerateTasks(activeProjectId, f.id);
+    }
+    if (ready.length) {
+      triggerToast(`Generating tasks for ${ready.length} feature${ready.length === 1 ? '' : 's'}…`);
+      await refreshFeatures();
+    }
+  };
+
+  const approveTask = async (taskId: string) => {
+    if (!activeProjectId) return;
+    await patchTask(activeProjectId, taskId, { status: 'approved' });
+    await refreshFeatures();
+  };
+
+  const approveAllDraftTasks = async (featureId?: string) => {
+    if (!activeProjectId) return;
+    const drafts = features
+      .filter(f => !featureId || f.id === featureId)
+      .flatMap(f => f.tasks.filter(t => t.status === 'draft'));
+    for (const t of drafts) {
+      await patchTask(activeProjectId, t.id, { status: 'approved' });
+    }
+    await refreshFeatures();
+    if (drafts.length) triggerToast(`Approved ${drafts.length} task${drafts.length === 1 ? '' : 's'}.`);
+  };
+
+  const publishTask = async (projectId: string, task: GeneratedTask, feature: Feature) => {
+    const item = await addItem({
+      title: task.title,
+      description: composeBoardDescription(task),
+      priority: task.priority,
+      area: task.area,
+      status: 'inbox',
+      source: { type: 'upload', name: documents.find(d => d.id === feature.documentId)?.filename || 'document', snippet: feature.name },
+    });
+    await patchTask(projectId, task.id, { status: 'on_board', boardItemId: item.id });
+  };
+
+  const addTaskToBoard = async (taskId: string) => {
+    if (!activeProjectId) return;
+    const feature = features.find(f => f.tasks.some(t => t.id === taskId));
+    const task = feature?.tasks.find(t => t.id === taskId);
+    if (!feature || !task) return;
+    await publishTask(activeProjectId, task, feature);
+    await refreshFeatures();
+    triggerToast(`Added “${task.title}” to the board.`);
+  };
+
+  const addAllApprovedToBoard = async () => {
+    if (!activeProjectId) return;
+    const approved = features.flatMap(f => f.tasks.filter(t => t.status === 'approved').map(t => ({ t, f })));
+    for (const { t, f } of approved) {
+      await publishTask(activeProjectId, t, f);
+    }
+    await refreshFeatures();
+    triggerToast(approved.length ? `Added ${approved.length} card${approved.length === 1 ? '' : 's'} to the board.` : 'No approved tasks to add.');
+  };
+
+  // Poll documents/features only while something is running.
+  useEffect(() => {
+    setDocuments([]);
+    setFeatures([]);
+    setClarification(null);
+    setWorkflowHistory([]);
+    setFeatureActivity({});
+    setFeatureMarkdown({});
+    if (!activeProjectId) {
+      setFeatureGenModeState(null);
+      setTaskGenModeState(null);
+      return;
+    }
+    setFeatureGenModeState(readGenMode(activeProjectId, 'feature'));
+    setTaskGenModeState(readGenMode(activeProjectId, 'task'));
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const docs = await refreshMvp(activeProjectId);
+        const running = docs.some(d => DOC_RUNNING.has(d.status)) || features.some(f => f.status === 'planning');
+        if (!cancelled && running) timer = setTimeout(tick, 2000);
+      } catch { /* backend down — don't loop hard */ }
+    };
+    let timer: ReturnType<typeof setTimeout>;
+    void tick();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const running = documents.some(d => DOC_RUNNING.has(d.status)) || features.some(f => f.status === 'planning');
+    if (!running) return;
+    const timer = setTimeout(() => { void refreshMvp(activeProjectId); }, 2000);
+    return () => clearTimeout(timer);
+  }, [activeProjectId, documents, features]);
+
+  const mergedState: DBState | null = state;
+
   const activeProject = projects.find(p => p.id === activeProjectId) || null;
 
   return (
     <ProjectContext.Provider value={{
-      state,
+      state: mergedState,
       loading,
       theme,
       setTheme,
@@ -537,7 +975,7 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setupDraft,
       startNewProjectSetup,
       cancelSetup,
-      beginClarification,
+      completeProjectSetup,
       finishSetupAndGenerate,
       createAgent,
       deleteAgent,
@@ -552,6 +990,30 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
       getDeprecations,
       uploadDocument,
       resolveIngestItem,
+      documents,
+      features,
+      clarification,
+      workflowHistory,
+      featureActivity,
+      featureMarkdown,
+      featureGenMode,
+      taskGenMode,
+      setFeatureGenMode,
+      setTaskGenMode,
+      refreshFeatures,
+      loadFeatureExtras,
+      answerClarification: answerClarificationFn,
+      skipClarification: skipClarificationFn,
+      skipRemainingQuestions: skipRemainingFn,
+      updateFeature,
+      approveFeature,
+      rejectFeature,
+      generateFeatureTasks,
+      generateApprovedFeatureTasks,
+      approveTask,
+      approveAllDraftTasks,
+      addTaskToBoard,
+      addAllApprovedToBoard,
       selectedCardId,
       setSelectedCardId,
       activeView,

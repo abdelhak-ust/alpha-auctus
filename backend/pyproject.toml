@@ -1,0 +1,61 @@
+[tool.poetry]
+name = "nexus-backend"
+version = "0.1.0"
+description = "Nexus backend — AI-native software delivery platform. See /ui_ux_design.md and /architecture.md for product spec, and the plan at .claude/plans for the phased build."
+authors = ["Abdelhak Mokri <abdelhakmokri@gmail.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.13"
+# Web framework
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
+python-multipart = "^0.0.12"
+websockets = ">=14.0,<17.0"
+# Config / validation
+pydantic = "^2.9.0"
+pydantic-settings = "^2.6.0"
+# Database (Postgres — canonical records + LangGraph checkpoints)
+sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
+asyncpg = "^0.30.0"
+alembic = "^1.14.0"
+# AI — Gemini via Vertex AI, reached only through LangChain (agents/llm.py).
+google-genai = "^2.25.0"
+langchain-core = ">=1.4.7,<2"
+langchain-google-genai = ">=2.0.0,<4"
+langchain-google-vertexai = ">=2.0.0,<4"
+# GCP services used only when deployed (local dev stays on disk/local Postgres)
+google-cloud-storage = ">=3.10.0,<4.0.0"
+google-cloud-tasks = "^2.16.0"
+google-cloud-secret-manager = "^2.20.0"
+# Outbound HTTP (GitHub App calls)
+httpx = ">=0.28.1,<1.0"
+# MVP graphs: LangGraph + Postgres checkpointer, Docling for PDF/DOCX.
+langgraph = "^1.2.12"
+langgraph-checkpoint-postgres = "^3.1.2"
+psycopg = {extras = ["binary"], version = "^3.3.6"}
+docling = "^2.130.0"
+python-docx = "^1.2.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+pytest-asyncio = "^0.24.0"
+ruff = "^0.7.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's `Depends(...)` as a default argument is the idiomatic DI pattern, not the
+# mutable-default-argument bug this rule is meant to catch — every route will trigger it.
+ignore = ["B008"]
