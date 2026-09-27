@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import { Readable } from 'node:stream';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { DBState, VerdictDetail, IngestItem, WebSource } from './src/types.js';
@@ -10,6 +11,63 @@ import type { ProjectRecord } from './db/types.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+
+// Browser calls to the FastAPI backend go through this server under /backend (same origin, so no
+// CORS, and on Cloud Run the backend stays private). Mounted before express.json() so request
+// bodies (uploads) stream through untouched.
+const BACKEND_URL = (process.env.BACKEND_URL || 'http://localhost:8000').replace(/\/+$/, '');
+const HOP_HEADERS = new Set(['host', 'connection', 'keep-alive', 'content-length', 'transfer-encoding', 'accept-encoding']);
+let backendToken: { value: string; expires: number } | null = null;
+
+// On Cloud Run (K_SERVICE is set) the backend only accepts an identity token for this service's
+// account, fetched from the metadata server. Locally there is no auth.
+async function backendAuthHeader(): Promise<string | null> {
+  if (!process.env.K_SERVICE) return null;
+  if (!backendToken || backendToken.expires < Date.now()) {
+    const r = await fetch(
+      'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity' +
+        `?audience=${encodeURIComponent(BACKEND_URL)}`,
+      { headers: { 'Metadata-Flavor': 'Google' } }
+    );
+    if (!r.ok) throw new Error(`metadata server returned ${r.status} for an identity token`);
+    backendToken = { value: await r.text(), expires: Date.now() + 50 * 60 * 1000 };
+  }
+  return `Bearer ${backendToken.value}`;
+}
+
+app.use('/backend', async (req, res) => {
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v !== undefined && !HOP_HEADERS.has(k)) headers.set(k, Array.isArray(v) ? v.join(', ') : v);
+  }
+  try {
+    const auth = await backendAuthHeader();
+    if (auth) headers.set('authorization', auth);
+    const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+    const upstream = await fetch(`${BACKEND_URL}${req.url}`, {
+      method: req.method,
+      headers,
+      body: hasBody ? (Readable.toWeb(req) as ReadableStream) : undefined,
+      duplex: 'half',
+      redirect: 'manual',
+    } as RequestInit);
+    res.status(upstream.status);
+    upstream.headers.forEach((v, k) => {
+      // fetch already decoded the body, so the upstream encoding/length no longer apply.
+      if (!HOP_HEADERS.has(k) && k !== 'content-encoding') res.setHeader(k, v);
+    });
+    if (upstream.body) Readable.fromWeb(upstream.body as any).pipe(res);
+    else res.end();
+  } catch (err) {
+    res.status(502).json({
+      detail: {
+        problem: "Couldn't reach the backend.",
+        cause: `${BACKEND_URL}: ${err instanceof Error ? err.message : String(err)}`,
+        fix: 'Start the backend (or check BACKEND_URL on the client server), then retry.',
+      },
+    });
+  }
+});
 
 app.use(express.json());
 

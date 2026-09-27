@@ -1,8 +1,0 @@
-# Builds the client image with the backend URL baked in (see /DEPLOY.md, step 7).
-substitutions:
-  _IMAGE: ""
-  _BACKEND_URL: ""
-steps:
-  - name: gcr.io/cloud-builders/docker
-    args: ["build", "--build-arg", "VITE_BACKEND_URL=${_BACKEND_URL}", "-t", "${_IMAGE}", "."]
-images: ["${_IMAGE}"]

@@ -7,9 +7,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-# Baked into the bundle at build time — the browser calls the backend directly.
-ARG VITE_BACKEND_URL
-ENV VITE_BACKEND_URL=${VITE_BACKEND_URL}
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
@@ -19,4 +16,5 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./
 COPY --from=build /app/data/database.json ./data/database.json
+# BACKEND_URL (runtime env) is where server.ts proxies /backend/* to.
 CMD ["node", "dist/server.cjs"]

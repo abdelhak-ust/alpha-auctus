@@ -23,7 +23,7 @@ import {
 
 const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
 
-export const BACKEND_URL: string = (env?.VITE_BACKEND_URL || 'http://localhost:8000').replace(/\/+$/, '');
+export const BACKEND_URL: string = (env?.VITE_BACKEND_URL || '/backend').replace(/\/+$/, '');
 
 const API = `${BACKEND_URL}/api`;
 
@@ -70,8 +70,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     throw new BackendError(
       "Couldn't reach the backend",
-      `no response from ${BACKEND_URL} — the backend isn't running, or it doesn't allow this origin (CORS)`,
-      'Start the backend (cd backend && poetry run uvicorn app.main:app --port 8000) or check VITE_BACKEND_URL, then retry',
+      `no response from ${BACKEND_URL} — the client server or the backend isn't running`,
+      'Start the backend (cd backend && poetry run uvicorn app.main:app --port 8000), then retry',
       0
     );
   }
