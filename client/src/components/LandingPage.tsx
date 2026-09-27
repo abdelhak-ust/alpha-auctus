@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowRight, Network, MessageSquare, ShieldCheck } from 'lucide-react';
+import { createGuestProfile, createUserProfile, SessionProfile } from '../lib/session.js';
 
 interface LandingPageProps {
-  onEnter: () => void;
+  onEnter: (profile: SessionProfile) => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onEnter }) => {
@@ -21,7 +22,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnter }) => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onEnter();
+    onEnter(createUserProfile(email));
+  };
+
+  const handleGuest = () => {
+    onEnter(createGuestProfile());
   };
 
   const features = [
@@ -50,16 +55,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnter }) => {
           {/* Wordmark */}
           <div className="flex items-center gap-2.5 mb-10">
             <span className="w-9 h-9 grid place-items-center bg-[var(--accent)] text-white font-mono text-base rounded-[var(--r-md)] font-bold">
-              N
+              A
             </span>
-            <span className="font-sans font-semibold text-xl tracking-tight">Nexus</span>
+            <span className="font-sans font-semibold text-xl tracking-tight">Alpha Auctus</span>
           </div>
 
           <h1 className="text-3xl lg:text-4xl font-semibold tracking-tight leading-tight">
             The memory layer for your team's decisions.
           </h1>
           <p className="mt-4 text-base text-stone-600 dark:text-stone-300 leading-relaxed">
-            Nexus turns a simple board into living memory. It flags duplicates and conflicts with
+            Alpha Auctus turns a simple board into living memory. It flags duplicates and conflicts with
             past decisions as you work, answers questions about your project with citations, and
             shows what every change touches — so getting context takes minutes, not days.
           </p>
@@ -90,7 +95,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnter }) => {
         <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-5">
           <div>
             <h2 className="text-xl font-semibold tracking-tight">
-              {mode === 'signin' ? 'Sign in to Nexus' : 'Create your account'}
+              {mode === 'signin' ? 'Sign in to Alpha Auctus' : 'Create your account'}
             </h2>
             <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">
               {mode === 'signin'
@@ -130,11 +135,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnter }) => {
 
           <button
             type="submit"
-            className="w-full py-2.5 bg-[var(--accent)] text-white text-sm font-semibold rounded-[var(--r-md)] hover:opacity-95 active:scale-[.99] transition flex items-center justify-center gap-1.5 cursor-pointer"
+            className="w-full py-2.5 bg-[var(--accent)] text-white text-sm font-semibold rounded-[var(--r-md)] hover:opacity-95 active:scale-[.99] transition flex items-center justify-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           >
             <span>{mode === 'signin' ? 'Sign in' : 'Sign up'}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
+
+          <button
+            type="button"
+            onClick={handleGuest}
+            className="w-full py-2.5 bg-transparent text-sm font-semibold rounded-[var(--r-md)] border border-stone-200 dark:border-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-900 active:scale-[.99] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          >
+            Log in as guest
+          </button>
+          <p className="text-xs text-center text-stone-500 dark:text-stone-400">
+            No email needed — for testing.
+          </p>
 
           <p className="text-xs text-center text-stone-500 dark:text-stone-400">
             {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}

@@ -15,29 +15,25 @@ websockets = ">=14.0,<17.0"
 # Config / validation
 pydantic = "^2.9.0"
 pydantic-settings = "^2.6.0"
-# Database (Postgres — canonical records; vectors live in Qdrant)
+# Database (Postgres — canonical records + LangGraph checkpoints)
 sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
 asyncpg = "^0.30.0"
 alembic = "^1.14.0"
-# Background jobs — arq/Redis for local dev only; Cloud Tasks is used when deployed
-# (see the plan §0.3 — this stays local so day-to-day dev never round-trips GCP).
-arq = "^0.26.1"
-redis = "^5.2.0"
-# AI provider adapter — Gemini via Vertex AI only (generation + embeddings through the
-# google-genai SDK in Vertex mode, ADC auth) — plans/feature-pipeline-contract.md §1.
+# AI — Gemini via Vertex AI, reached only through LangChain (agents/llm.py).
 google-genai = "^2.25.0"
-# GCP services used only when deployed (local dev stays on disk/local Postgres — plan §0.3)
-google-cloud-storage = "^2.18.0"
+langchain-core = ">=1.4.7,<2"
+langchain-google-genai = ">=2.0.0,<4"
+langchain-google-vertexai = ">=2.0.0,<4"
+# GCP services used only when deployed (local dev stays on disk/local Postgres)
+google-cloud-storage = ">=3.10.0,<4.0.0"
 google-cloud-tasks = "^2.16.0"
 google-cloud-secret-manager = "^2.20.0"
 # Outbound HTTP (GitHub App calls)
 httpx = ">=0.28.1,<1.0"
-# Feature pipeline (plans/ingestion.md §3): LangGraph orchestration + its Postgres
-# checkpointer (psycopg 3 driver), Qdrant vectors, Docling parsing (PDF/DOCX/MD/TXT).
+# MVP graphs: LangGraph + Postgres checkpointer, Docling for PDF/DOCX.
 langgraph = "^1.2.12"
 langgraph-checkpoint-postgres = "^3.1.2"
 psycopg = {extras = ["binary"], version = "^3.3.6"}
-qdrant-client = "^1.19.1"
 docling = "^2.130.0"
 python-docx = "^1.2.0"
 

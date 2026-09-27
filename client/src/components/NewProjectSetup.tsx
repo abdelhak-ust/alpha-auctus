@@ -106,7 +106,7 @@ const UploadRow: React.FC<{
 };
 
 export const NewProjectSetup: React.FC = () => {
-  const { projects, cancelSetup, beginClarification } = useProject();
+  const { projects, cancelSetup, completeProjectSetup } = useProject();
   // Inline "unsupported type" message per zone (§4.10: each zone rejects others' types inline).
   const [zoneErrors, setZoneErrors] = useState<Partial<Record<DraftSourceKind, string>>>({});
   // Real File objects for the 'file' zone, keyed by name — uploaded to backend/ on generate.
@@ -165,7 +165,7 @@ export const NewProjectSetup: React.FC = () => {
       answers: []
     };
     const files = sources.filter(s => s.kind === 'file' && fileBlobs[s.name]).map(s => fileBlobs[s.name]);
-    beginClarification(draft, files);
+    void completeProjectSetup(draft, files);
   };
 
   return (
@@ -185,7 +185,7 @@ export const NewProjectSetup: React.FC = () => {
         <header className="space-y-1.5">
           <h1 className="text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-50">Start a new project</h1>
           <p className="text-sm text-stone-500 dark:text-stone-400 leading-relaxed">
-            Drop in what you already have. We'll read it and ask a few questions before building your board.
+            Drop in what you already have. We'll extract features in Chat and keep Sources, Features, and Board as inspection.
           </p>
         </header>
 

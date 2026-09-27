@@ -3,8 +3,6 @@
 See .env.example for the full list of variables. Nothing here is secret by
 itself — actual values (e.g. the real GCP project id) live in a local, gitignored
 backend/.env (or the process env in deployment).
-
-The feature-pipeline settings below are frozen by plans/ingestion.md §11.1 / §11.3.
 """
 
 from functools import lru_cache
@@ -14,7 +12,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/ — so .env and relative paths resolve the same no matter the process cwd
-# (uvicorn, the arq worker, and pytest are all started from different places).
+# (uvicorn and pytest are started from different places).
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
@@ -28,22 +26,15 @@ class Settings(BaseSettings):
     environment: str = Field(default="development")
     api_prefix: str = "/api"
 
-    # Database — Postgres holds canonical records (and the LangGraph checkpointer tables).
+    # Database — Postgres holds canonical records and the LangGraph checkpointer tables.
     database_url: str = Field(
         default="postgresql+asyncpg://localhost/nexus_dev",
         description="Async SQLAlchemy DSN, e.g. postgresql+asyncpg://user:pass@host/db",
     )
 
-    # Background jobs — local dev only (arq/Redis). Deployed environments use Cloud Tasks
-    # instead (see plan §0.3); this field is simply unused there.
-    redis_url: str = Field(default="redis://localhost:6379/0")
-
-    # Vector store — Qdrant. ":memory:" gives an in-process store (tests only).
-    qdrant_url: str = Field(default="http://localhost:6333")
-
-    # AI — Gemini via Vertex AI only (google-genai SDK in Vertex mode), both local and
-    # deployed. Auth is Application Default Credentials (`gcloud auth
-    # application-default login` locally; a service account when deployed) — no API key.
+    # AI — Gemini via Vertex AI, reached only through agents/llm.py (LangChain chat model).
+    # Auth is Application Default Credentials (`gcloud auth application-default login`
+    # locally; a service account when deployed) — no API key.
     gcp_project_id: str = Field(
         default="",
         description="GCP project id hosting Vertex AI. Required for any AI call to work. "
@@ -52,19 +43,29 @@ class Settings(BaseSettings):
     )
     vertex_location: str = Field(
         default="us-central1",
-        description="Vertex AI location for the Gemini generation + embedding models.",
+        description="Vertex AI location for the Gemini model.",
     )
     gemini_model: str = Field(default="gemini-2.5-pro")
-    gemini_embedding_model: str = Field(default="gemini-embedding-001")
-    embedding_dim: int = Field(default=768)
+    google_genai_use_vertexai: bool = Field(
+        default=True,
+        description="Must stay true: Gemini is reached via Vertex AI, not the "
+        "Gemini Developer API. Maps to GOOGLE_GENAI_USE_VERTEXAI.",
+    )
 
-    # Feature matching (plans/ingestion.md §9: 0.80 cosine, top-k 5, config-tunable).
-    feature_match_threshold: float = Field(default=0.80)
-    feature_match_top_k: int = Field(default=5)
-
-    # Uploads — raw document blobs on the local filesystem (Cloud Storage when deployed).
+    # Uploads — raw document blobs on the local filesystem.
     blob_dir: str = Field(default="./data/blobs")
     max_upload_mb: int = Field(default=25)
+
+    # Document graph — chunking (plans/mvp-v0.md)
+    extract_chunk_chars: int = Field(default=40_000)
+    chunk_overlap_chars: int = Field(default=1_500)
+
+    # Agent bounds
+    agent_concurrency: int = Field(default=4)
+    max_questions_per_feature: int = Field(default=5)
+    analyst_max_steps: int = Field(default=8)
+    max_follow_ups_per_feature: int = Field(default=2)
+    llm_max_retries: int = Field(default=3)
 
     # CORS — the existing client dev server (Vite) runs on :3000
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])

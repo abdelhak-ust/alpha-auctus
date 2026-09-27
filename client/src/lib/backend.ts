@@ -1,9 +1,25 @@
-// Typed client for the ingestion endpoints served by backend/ (FastAPI).
-// Contract: plans/ingestion.md §11.1 (frozen). The browser calls the backend
-// directly — no Node proxy (plans/feature-pipeline-contract.md §8). Board data
-// (items, decisions, projects, agents, settings) stays on client/server.ts.
+// Typed client for the MVP endpoints served by backend/ (FastAPI).
+// Contract: plans/mvp-v0.md. The browser calls the backend directly — no Node proxy.
+// Board data (items, decisions, projects, agents, settings) stays on client/server.ts.
 
-import { IngestDocument, IngestItem, RegistryFeature } from '../types.js';
+import {
+  AgentActivity,
+  AskResponse,
+  AskTurn,
+  AuthorRequest,
+  AuthorResponse,
+  ClarificationAnswerResponse,
+  ClarificationState,
+  Feature,
+  FeaturePatch,
+  GeneratedTask,
+  ImpactExplainRequest,
+  ImpactExplainResponse,
+  MvpDocument,
+  Status,
+  VerdictDetail,
+  WorkflowState,
+} from '../types.js';
 
 const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
 
@@ -11,25 +27,22 @@ export const BACKEND_URL: string = (env?.VITE_BACKEND_URL || 'http://localhost:8
 
 const API = `${BACKEND_URL}/api`;
 
-// v1 file types (plans/ingestion.md §9). Anything else is refused before upload.
-export const INGEST_EXTENSIONS = ['pdf', 'docx', 'md', 'txt'] as const;
+export const INGEST_EXTENSIONS = ['pdf', 'docx', 'md'] as const;
 export const INGEST_ACCEPT = INGEST_EXTENSIONS.map(e => `.${e}`).join(',');
 
 export const isIngestibleFile = (name: string): boolean =>
   (INGEST_EXTENSIONS as readonly string[]).includes((name.split('.').pop() || '').toLowerCase());
 
-/** Ends a sentence with a period unless it already ends in . ! or ? */
 export const withPeriod = (s: string): string => {
   const t = s.trim();
   return /[.!?]$/.test(t) ? t : `${t}.`;
 };
 
-/** Error shape from the backend: `{ detail: { problem, cause, fix } }` (ui_ux_design.md §7). */
 export class BackendError extends Error {
   readonly problem: string;
   readonly cause: string;
   readonly fix: string;
-  readonly status: number; // 0 = no response (network / CORS)
+  readonly status: number;
 
   constructor(problem: string, cause: string, fix: string, status: number) {
     super(`${problem} ${cause} ${fix}`);
@@ -40,7 +53,6 @@ export class BackendError extends Error {
     this.status = status;
   }
 
-  /** One-line "problem (cause). fix" rendering for inline errors / toasts. */
   toDisplay(): string {
     const strip = (s: string) => s.trim().replace(/[.\s]+$/, '');
     return `${strip(this.problem)} (${strip(this.cause)}). ${strip(this.fix)}.`;
@@ -57,7 +69,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     res = await fetch(`${API}${path}`, init);
   } catch {
     throw new BackendError(
-      "Couldn't reach the ingestion service",
+      "Couldn't reach the backend",
       `no response from ${BACKEND_URL} — the backend isn't running, or it doesn't allow this origin (CORS)`,
       'Start the backend (cd backend && poetry run uvicorn app.main:app --port 8000) or check VITE_BACKEND_URL, then retry',
       0
@@ -76,76 +88,185 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       : Array.isArray(detail)
         ? detail.map((d: any) => d?.msg).filter(Boolean).join('; ') || `HTTP ${res.status}`
         : `HTTP ${res.status} ${res.statusText}`.trim();
-    throw new BackendError('The ingestion service rejected the request', cause, 'Check the backend logs, then retry', res.status);
+    throw new BackendError('The backend rejected the request', cause, 'Check the backend logs, then retry', res.status);
   }
 
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
 const enc = encodeURIComponent;
 
-/** POST /projects/{projectId}/documents — 202 new, 200 + `duplicate: true` for a known hash. */
-export function uploadIngestDocument(projectId: string, file: File): Promise<IngestDocument> {
+export function uploadDocument(projectId: string, file: File): Promise<MvpDocument> {
   const form = new FormData();
   form.append('file', file, file.name);
-  return request<IngestDocument>(`/projects/${enc(projectId)}/documents`, { method: 'POST', body: form });
+  return request<MvpDocument>(`/projects/${enc(projectId)}/documents`, { method: 'POST', body: form });
 }
 
-/** GET /projects/{projectId}/documents */
-export function listIngestDocuments(projectId: string): Promise<IngestDocument[]> {
-  return request<IngestDocument[]>(`/projects/${enc(projectId)}/documents`);
+export function listDocuments(projectId: string): Promise<MvpDocument[]> {
+  return request<MvpDocument[]>(`/projects/${enc(projectId)}/documents`);
 }
 
-/** GET /projects/{projectId}/documents/{documentId} */
-export function getIngestDocument(projectId: string, documentId: string): Promise<IngestDocument> {
-  return request<IngestDocument>(`/projects/${enc(projectId)}/documents/${enc(documentId)}`);
+export function getDocument(projectId: string, documentId: string): Promise<MvpDocument> {
+  return request<MvpDocument>(`/projects/${enc(projectId)}/documents/${enc(documentId)}`);
 }
 
-/** GET /projects/{projectId}/features */
-export function listRegistryFeatures(projectId: string): Promise<RegistryFeature[]> {
-  return request<RegistryFeature[]>(`/projects/${enc(projectId)}/features`);
+export function getDocumentMarkdown(projectId: string, documentId: string): Promise<{ markdown: string }> {
+  return request<{ markdown: string }>(`/projects/${enc(projectId)}/documents/${enc(documentId)}/markdown`);
 }
 
-/** GET /projects/{projectId}/review-queue */
-export function getReviewQueue(projectId: string): Promise<IngestItem[]> {
-  return request<IngestItem[]>(`/projects/${enc(projectId)}/review-queue`);
+export function listFeatures(projectId: string): Promise<Feature[]> {
+  return request<Feature[]>(`/projects/${enc(projectId)}/features`);
 }
 
-/** POST /projects/{projectId}/review-queue/{itemId}/resolve */
-export function resolveReviewItem(projectId: string, itemId: string, action: 'approve' | 'dismiss'): Promise<{ ok: true }> {
-  return request<{ ok: true }>(`/projects/${enc(projectId)}/review-queue/${enc(itemId)}/resolve`, {
-    method: 'POST',
+export function getFeature(projectId: string, featureId: string): Promise<Feature> {
+  return request<Feature>(`/projects/${enc(projectId)}/features/${enc(featureId)}`);
+}
+
+export function patchFeature(projectId: string, featureId: string, body: FeaturePatch): Promise<Feature> {
+  return request<Feature>(`/projects/${enc(projectId)}/features/${enc(featureId)}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action })
+    body: JSON.stringify(body),
   });
 }
 
-const TERMINAL = new Set(['done', 'failed']);
+export function getFeatureActivity(projectId: string, featureId: string): Promise<AgentActivity[]> {
+  return request<AgentActivity[]>(`/projects/${enc(projectId)}/features/${enc(featureId)}/activity`);
+}
 
-/**
- * Polls a document until it reaches `done` or `failed`. Resolves with the final
- * document; rejects with BackendError if the backend stops answering or the
- * timeout elapses (never silently gives up).
- */
-export async function waitForIngestDocument(
-  projectId: string,
-  documentId: string,
-  opts: { intervalMs?: number; timeoutMs?: number; onUpdate?: (d: IngestDocument) => void } = {}
-): Promise<IngestDocument> {
-  const interval = opts.intervalMs ?? 2000;
-  const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60 * 1000);
-  for (;;) {
-    const doc = await getIngestDocument(projectId, documentId);
-    opts.onUpdate?.(doc);
-    if (TERMINAL.has(doc.status)) return doc;
-    if (Date.now() > deadline) {
-      throw new BackendError(
-        `Ingestion of ${doc.filename} is taking longer than expected`,
-        `still "${doc.status}" after ${Math.round((opts.timeoutMs ?? 600000) / 60000)} min`,
-        'Check the backend worker (arq) is running; the document keeps processing in the background',
-        0
-      );
+export function getClarification(projectId: string): Promise<ClarificationState> {
+  return request<ClarificationState>(`/projects/${enc(projectId)}/clarification`);
+}
+
+export function answerClarification(projectId: string, questionId: string, answer: string): Promise<ClarificationAnswerResponse> {
+  return request<ClarificationAnswerResponse>(`/projects/${enc(projectId)}/clarification/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionId, answer }),
+  });
+}
+
+export function skipClarification(projectId: string, questionId: string): Promise<ClarificationAnswerResponse> {
+  return request<ClarificationAnswerResponse>(`/projects/${enc(projectId)}/clarification/skip`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionId }),
+  });
+}
+
+export function skipRemainingClarification(projectId: string, featureId: string): Promise<ClarificationAnswerResponse> {
+  return request<ClarificationAnswerResponse>(`/projects/${enc(projectId)}/clarification/skip-remaining`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ featureId }),
+  });
+}
+
+export async function getWorkflow(projectId: string): Promise<WorkflowState> {
+  try {
+    return await request<WorkflowState>(`/projects/${enc(projectId)}/workflow`);
+  } catch (e) {
+    if (e instanceof BackendError && (e.status === 404 || e.status === 405)) {
+      const clar = await getClarification(projectId);
+      return { history: clar.history };
     }
-    await new Promise(r => setTimeout(r, interval));
+    throw e;
   }
+}
+
+export function generateTasks(projectId: string, featureId: string): Promise<Feature> {
+  return request<Feature>(`/projects/${enc(projectId)}/features/${enc(featureId)}/tasks/generate`, { method: 'POST' });
+}
+
+export function patchTask(
+  projectId: string,
+  taskId: string,
+  body: { status?: GeneratedTask['status']; title?: string; description?: string; priority?: GeneratedTask['priority']; boardItemId?: number }
+): Promise<GeneratedTask> {
+  return request<GeneratedTask>(`/projects/${enc(projectId)}/tasks/${enc(taskId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function askAboutItem(
+  projectId: string,
+  body: {
+    query: string;
+    boardItemId: number;
+    item: { title: string; description: string; area: string; priority: string };
+    history: AskTurn[];
+  },
+): Promise<AskResponse> {
+  return request<AskResponse>(`/projects/${enc(projectId)}/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function askProjectMemory(
+  projectId: string,
+  body: {
+    query: string;
+    history?: AskTurn[];
+    boardItems: { id: number; title: string; description: string; area: string; status: Status }[];
+  },
+): Promise<AskResponse> {
+  return request<AskResponse>(`/projects/${enc(projectId)}/memory/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function explainImpact(
+  projectId: string,
+  body: ImpactExplainRequest,
+): Promise<ImpactExplainResponse> {
+  return request<ImpactExplainResponse>(`/projects/${enc(projectId)}/impact/explain`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function authorDocument(
+  projectId: string,
+  body: AuthorRequest,
+): Promise<AuthorResponse> {
+  return request<AuthorResponse>(`/projects/${enc(projectId)}/author`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function checkItemVerdict(
+  projectId: string,
+  item: { id: number; title: string; description: string; area: string },
+  boardItems: { id: number; title: string; description: string; area: string; status: Status }[],
+): Promise<VerdictDetail> {
+  return request<VerdictDetail>(`/projects/${enc(projectId)}/verdicts/check`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item, boardItems }),
+  });
+}
+
+export const DOC_RUNNING = new Set(['uploaded', 'converting', 'extracting', 'analysing']);
+
+export function progressLabel(doc: MvpDocument): string {
+  const p = doc.progress;
+  const step = p?.step || doc.status;
+  const done = p?.done ?? 0;
+  const total = p?.total ?? 0;
+  if (step === 'extracting' && total) return `Extractor: chunk ${done}/${total}`;
+  if (step === 'analysing' && total) return `Analyst: ${done}/${total} features`;
+  if (step === 'converting') return 'Converting to Markdown…';
+  if (step === 'ready') return `${doc.featureCount} feature${doc.featureCount === 1 ? '' : 's'}`;
+  if (step === 'failed') return 'Failed';
+  return step;
 }

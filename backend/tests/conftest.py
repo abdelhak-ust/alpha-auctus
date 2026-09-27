@@ -2,35 +2,16 @@
 
 Test database
 -------------
-Tests run against a separate database, `TEST_DATABASE_URL` (default
-`postgresql+asyncpg://localhost/nexus_test`, create it once with `createdb nexus_test`), never
-`nexus_dev`. `DATABASE_URL` is pointed at it *before* any `app.*` import so the app's own engine
-(`app.db.session.engine`) and Alembic's env.py both use it too. Alembic `upgrade head` runs once
-per session, the first time a test asks for the DB.
+Tests run against `TEST_DATABASE_URL` (default `postgresql+asyncpg://localhost/nexus_test`).
+`DATABASE_URL` is pointed at it *before* any `app.*` import. Alembic `upgrade head` runs
+once per session.
 
-Fixtures (stable — other agents' test files depend on these names)
--------------------------------------------------------------------
-- `db_session`: an `AsyncSession` inside an outer transaction that is rolled back after the
-  test. Code under test may call `session.commit()` — it only releases a SAVEPOINT — so no rows
-  leak between tests (`rollback()` likewise only rolls back to the savepoint).
-- `api_client`: an `httpx.AsyncClient` on `app.main.app` (ASGITransport, base_url
-  `http://test`) with `get_db` overridden to yield `db_session`, so route writes are visible to
-  the test through `db_session` and rolled back afterwards. `app.main` is imported lazily inside
-  this fixture — never at module level — so one missing module can't break collection for all.
-- Factories `commit()` what they create (in savepoint mode that only releases the savepoint), so
-  seeded rows behave like already-committed data: a route's `rollback()` can't wipe them, and
-  they are still discarded when the test ends.
-- `make_document(**overrides) -> Document`: inserts a `documents` row (unique hash by default).
-- `make_feature(**overrides) -> Feature`: inserts a feature + its version 1 and sets
-  `current_version_id`. Accepts `description`, `source_refs`, `version_no`, `created_from`.
-- `make_source_ref(**overrides) -> dict`: a contract §5 `source_ref` dict (snake_case).
-
-Event loops
------------
-`app.db.session.engine` is a module-level singleton; under pytest each test may run on its own
-event loop, and a pooled connection from a previous loop fails with "Future attached to a
-different loop". `_fresh_db_pool` disposes the pool before each test. `db_session` uses its own
-NullPool engine per test for the same reason.
+Fixtures
+--------
+- `db_session`: AsyncSession inside an outer transaction rolled back after the test.
+- `api_client`: httpx.AsyncClient on `app.main.app` with `get_db` overridden.
+- `make_document` / `make_feature`: MVP factories (commit so route rollbacks keep them).
+- Graph nodes share `db_session` via `set_session_factory` (autouse).
 """
 
 import os
@@ -51,8 +32,9 @@ from app.config import get_settings  # noqa: E402
 
 get_settings.cache_clear()
 
-from app.db.session import engine  # noqa: E402
-from app.models import Document, Feature, FeatureVersion  # noqa: E402
+from app.db.session import engine, set_session_factory  # noqa: E402
+from app.models import Document, Feature, FeatureQuestion, Task  # noqa: E402
+from tests.fakes import ReuseSession  # noqa: E402
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -65,15 +47,17 @@ async def _fresh_db_pool():
 
 @pytest.fixture(scope="session")
 def _migrated_test_db() -> str:
-    """Run `alembic upgrade head` on the test DB once per session."""
     from alembic import command
     from alembic.config import Config
 
+    versions = BACKEND_DIR / "migrations" / "versions"
+    for sidecar in versions.glob("._*"):
+        sidecar.unlink(missing_ok=True)
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
     try:
         command.upgrade(cfg, "head")
-    except Exception as exc:  # DB missing / Postgres down — say how to fix it
+    except Exception as exc:
         pytest.fail(
             f"Could not migrate the test database at {TEST_DATABASE_URL}: {exc}. "
             "Create it with `createdb nexus_test` (or set TEST_DATABASE_URL).",
@@ -92,9 +76,11 @@ async def db_session(_migrated_test_db: str) -> AsyncIterator[AsyncSession]:
             expire_on_commit=False,
             join_transaction_mode="create_savepoint",
         )
+        set_session_factory(lambda: ReuseSession(session))
         try:
             yield session
         finally:
+            set_session_factory(None)
             await session.close()
             if outer.is_active:
                 await outer.rollback()
@@ -120,76 +106,117 @@ async def api_client(db_session: AsyncSession) -> AsyncIterator[Any]:
 
 
 @pytest.fixture
-def make_source_ref() -> Callable[..., dict[str, Any]]:
-    def _make(**overrides: Any) -> dict[str, Any]:
-        ref: dict[str, Any] = {
-            "doc_id": str(uuid.uuid4()),
-            "doc_type": "upload",
-            "chunk_id": str(uuid.uuid4()),
-            "section": "1. Overview",
-            "char_start": 0,
-            "char_end": 42,
-            "snippet": "Users can sign in with their work email.",
-        }
-        ref.update(overrides)
-        return ref
-
-    return _make
-
-
-@pytest.fixture
 def make_document(db_session: AsyncSession) -> Callable[..., Awaitable[Document]]:
     async def _make(**overrides: Any) -> Document:
         fields: dict[str, Any] = {
             "project_id": "proj-test",
-            "doc_type": "upload",
-            "content_hash": uuid.uuid4().hex + uuid.uuid4().hex,  # 64 hex chars, unique
             "filename": "spec.md",
             "mime_type": "text/markdown",
-            "ingestion_status": "pending",
+            "content_hash": uuid.uuid4().hex + uuid.uuid4().hex,
+            "status": "uploaded",
+            "progress": {"step": "uploaded", "done": 0, "total": 1},
         }
         fields.update(overrides)
         doc = Document(**fields)
         db_session.add(doc)
-        await db_session.commit()  # seeded rows survive a route's rollback(); see module doc
+        await db_session.commit()
         return doc
 
     return _make
 
 
 @pytest.fixture
-def make_feature(
-    db_session: AsyncSession, make_source_ref: Callable[..., dict[str, Any]]
-) -> Callable[..., Awaitable[Feature]]:
+def make_feature(db_session: AsyncSession) -> Callable[..., Awaitable[Feature]]:
     async def _make(
         *,
-        description: str = "Users can sign in with their work email.",
-        source_refs: list[dict[str, Any]] | None = None,
-        version_no: int = 1,
-        created_from: str | None = None,
+        document: Document | None = None,
+        questions: list[dict[str, Any]] | None = None,
         **overrides: Any,
     ) -> Feature:
+        if document is None:
+            document = Document(
+                project_id=overrides.get("project_id", "proj-test"),
+                filename="spec.md",
+                mime_type="text/markdown",
+                content_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                status="ready",
+                markdown=overrides.pop("markdown", "# Spec\n\nUsers can sign in with email."),
+            )
+            db_session.add(document)
+            await db_session.flush()
         fields: dict[str, Any] = {
-            "project_id": "proj-test",
+            "project_id": document.project_id,
+            "document_id": document.id,
             "name": "Email sign-in",
-            "lifecycle_state": "consolidated",
+            "summary": "Users can sign in with their work email.",
+            "details": {
+                "description": "Users can sign in with their work email.",
+                "user_roles": ["user"],
+                "functional_requirements": [
+                    {"text": "Accept work email", "quote": "sign in with their work email"}
+                ],
+                "acceptance_criteria": [],
+                "constraints": [],
+                "dependencies": [],
+                "out_of_scope": [],
+            },
+            "source_quotes": [
+                {
+                    "quote": "Users can sign in with their work email.",
+                    "verified": True,
+                    "char_start": 10,
+                    "char_end": 50,
+                    "origin": "document",
+                }
+            ],
+            "status": "analysed",
+            "position": 0,
         }
         fields.update(overrides)
         feature = Feature(**fields)
         db_session.add(feature)
         await db_session.flush()
-        refs = source_refs if source_refs is not None else [make_source_ref()]
-        version = FeatureVersion(
-            feature_id=feature.feature_id,
-            version_no=version_no,
-            description=description,
-            source_refs=refs,
-            created_from=created_from or f"ingest:{refs[0]['doc_id'] if refs else 'test'}",
-        )
-        db_session.add(version)
-        await db_session.flush()
-        feature.current_version_id = version.version_id
-        await db_session.commit()  # seeded rows survive a route's rollback(); see module doc
+        for i, q in enumerate(questions or []):
+            db_session.add(
+                FeatureQuestion(
+                    project_id=feature.project_id,
+                    feature_id=feature.id,
+                    question=q.get("question", "Who is this for?"),
+                    why=q.get("why", "Need the role"),
+                    target_field=q.get("target_field", "user_roles"),
+                    is_follow_up=bool(q.get("is_follow_up", False)),
+                    status=q.get("status", "open"),
+                    ordinal=q.get("ordinal", i),
+                )
+            )
+        await db_session.commit()
         return feature
+
+    return _make
+
+
+@pytest.fixture
+def make_task(db_session: AsyncSession) -> Callable[..., Awaitable[Task]]:
+    async def _make(feature: Feature, **overrides: Any) -> Task:
+        fields: dict[str, Any] = {
+            "project_id": feature.project_id,
+            "feature_id": feature.id,
+            "title": "Implement sign-in",
+            "description": "Add email sign-in.",
+            "area": "auth",
+            "priority": "P1",
+            "acceptance_criteria": [
+                {"given": "a user", "when": "they submit email", "then": "they are signed in"}
+            ],
+            "estimate": "M",
+            "traces_to": ["Accept work email"],
+            "status": "draft",
+            "ordinal": 0,
+        }
+        fields.update(overrides)
+        task = Task(**fields)
+        db_session.add(task)
+        await db_session.commit()
+        return task
 
     return _make

@@ -8,6 +8,110 @@ phase is implemented and passes `nexus-verify` — newest entry on top.
 
 ---
 
+## 2026-09-27 — Real Author documents
+
+**What:** Author no longer hits Node `/api/author` (canned SSO/CSV or Gemini over a hardcoded area). `POST /api/projects/{projectId}/author` assembles scoped features, tasks, document passages, and a board/decision snapshot, then drafts BRD / tech spec / task tree through `get_chat_model()`. Cite or stay silent: no citation ⇒ no assertion; Decision #4 is kept only when that id is in the supplied decisions. Area select is live slugs plus All, not the demo Authentication / Reporting / General list.
+
+**Files:** new — `backend/app/agents/author.py`, `backend/tests/test_author.py`, `plans/author-documents.md`. Extended — `backend/app/agents/prompts.py` (`AUTHOR`), `backend/app/schemas/mvp.py` (`AuthorRequest`, `AuthorResponse`, …), `backend/app/api/routes/mvp.py` (`POST …/author`), `client/src/lib/backend.ts` (`authorDocument`), `client/src/types.ts`, `client/src/context/ProjectContext.tsx` (`generateDocument` → FastAPI), `client/src/App.tsx` (`AuthorView` area list + `BackendError`).
+
+**Verified:** prior session — fake-model tests for auth-scoped BRD/spec cite (`source`/`item`), task tree lists only in-scope tasks, empty scope does not emit the SSO/CSV sample, empty `GCP_PROJECT_ID` → structured 4xx, empty type → 422, full document markdown not dumped into the prompt, fabricated `decision` citations dropped unless the client supplied that id, conflict count uses the filtered board scope. `test_no_direct_sdk.py` stays the SDK guard. This session closed the plan as a prerequisite for guest login and did not re-run pytest.
+
+**Open:** Streaming, PDF export, and persisting authored drafts stay out of this slice. Node `/api/author` is unused but not deleted.
+
+**Commit:** not committed.
+
+---
+
+## 2026-09-27 — Live Trace / impact graph
+
+**What:** Trace no longer renders the hardcoded SSO/CSV demo. The client derives nodes and edges from board cards, areas, SQLite decisions, features/tasks, and verdicts (`client/src/lib/impactGraph.ts`). Clicking a node fills Selected Impact Explanation from real neighbors; **Explain this impact** calls `POST /api/projects/{projectId}/impact/explain`, which summarizes only the supplied subgraph through `get_chat_model()`. Cite or stay silent: no citation ⇒ no assertion; Decision #4 is never invented — a `decision` cite is kept only when that id is in the subgraph.
+
+**Files:** new — `backend/app/agents/impact.py`, `backend/tests/test_impact.py`, `client/src/lib/impactGraph.ts`, `client/src/lib/impactGraph.test.ts`, `plans/trace-impact-graph.md`. Extended — `backend/app/agents/prompts.py` (`IMPACT_EXPLAIN`), `backend/app/schemas/mvp.py` (`ImpactExplainRequest`, `ImpactExplainResponse`, …), `backend/app/api/routes/mvp.py` (`POST …/impact/explain`), `client/src/lib/backend.ts` (`explainImpact`), `client/src/types.ts`, `client/src/components/ImpactGraph.tsx`.
+
+**Verified:** prior session — client builder: two cards same area → one area node + two `depends-on` edges; duplicate verdict → `duplicate` edge; empty items → no demo SSO nodes. Fake-model route tests: neighbor cite (`item`), unknown subgraph stays silent (`citations: []`), fabricated `decision-4` dropped unless that neighbor is in the subgraph, empty `GCP_PROJECT_ID` → structured 4xx `{problem, cause, fix}`, empty `nodeId` → 422. Memory/Ask tests still pass. `test_no_direct_sdk.py` stays the SDK guard.
+
+**Open:** Persisted `Edge` table, Qdrant, and stage-15 Run → PR → Deploy stay out of this slice. Browser click/Explain path was not re-driven in this session.
+
+**Commit:** not committed.
+
+---
+
+## 2026-09-27 — Project Memory Ask
+
+**What:** the Memory nav (and CmdK "Ask…") now hits FastAPI instead of the Node SSO/CSV mock. `POST /api/projects/{projectId}/memory/ask` assembles keyword passages from ready document markdown, structured feature/task rows, and a client board snapshot, then answers through `get_chat_model()` only. Cite or stay silent: no citation ⇒ no assertion; fabricated decision ids are dropped. Card-drawer Ask is unchanged and does not write `chat_messages`.
+
+**Files:** new — `backend/app/agents/memory.py`, `backend/tests/test_memory.py`, `plans/project-memory-ask.md`. Extended — `backend/app/agents/prompts.py` (`MEMORY_ASK`), `backend/app/schemas/mvp.py` (`MemoryAskRequest`, `MemoryBoardItem`), `backend/app/api/routes/mvp.py` (`POST …/memory/ask`), `client/src/lib/backend.ts` (`askProjectMemory`), `client/src/context/ProjectContext.tsx` (no-`itemId` `askQuestion` → FastAPI), `client/src/App.tsx` (`AskView` example prompts + `BackendError`).
+
+**Verified:** prior session — fake-model tests for feature quote (`source` citation), board card (`item` citation), unknown question (refusal, `citations: []`), empty `GCP_PROJECT_ID` (structured 4xx `{problem, cause, fix}`), empty query (422), full markdown never dumped into the prompt, fabricated `decision` citations dropped. `test_no_direct_sdk.py` stays the SDK guard. Item-scoped `POST …/ask` tests still pass.
+
+**Open:** Decision Records, Qdrant, streaming, and persisted Memory threads stay out of this slice. Node `/api/ask` is unused by Memory but not deleted.
+
+**Commit:** not committed.
+
+---
+
+## 2026-09-27 — Manual add: task-vs-task verdict
+
+**What:** a Vertex classifier now compares a newly added or edited board card to the other board cards plus unpublished generated tasks (`draft` / `approved`) and returns a cited ranked verdict. The card still lands immediately (spreadsheet-fast); nothing auto-blocks or auto-merges. `POST /api/projects/{projectId}/verdicts/check` uses `get_chat_model()` only. Cite or stay silent: no remaining cited candidate ⇒ `net-new`. Node `analyseInBackground` is no longer the create/edit path (it was the SSO/CSV mock).
+
+**Files:** new — `backend/app/agents/verdict.py`, `backend/tests/test_verdict.py`, `plans/manual-add-verdict.md`. Extended — `backend/app/agents/prompts.py` (`VERDICT`), `backend/app/schemas/mvp.py` (`VerdictCheckRequest`, `VerdictDetail`, …), `backend/app/api/routes/mvp.py` (`POST …/verdicts/check`), `client/src/lib/backend.ts` (`checkItemVerdict`), `client/src/context/ProjectContext.tsx` (`addItem` / title-description `updateItem`), `client/server.ts` (create/edit no longer call `analyseInBackground`).
+
+**Verified:** prior session — fake-model tests for board duplicate (`duplicate` + item citation), draft-task contradiction (`conflict` + task uuid cite), unique title (`net-new`, empty candidates), empty `GCP_PROJECT_ID` (structured 4xx `{problem, cause, fix}`), `on_board` tasks excluded from the unpublished set, empty compare set short-circuits to `net-new` without calling the model. `test_no_direct_sdk.py` stays the SDK guard.
+
+**Open:** Decision Records and Qdrant stay out of this slice. Confidence below 70 still surfaces (never dropped). Client keeps `checking` then toasts and falls back to `net-new` when Vertex is missing.
+
+**Commit:** not committed.
+
+---
+
+## 2026-09-27 — Task drawer Ask AI
+
+**What:** the card-drawer Ask tab now answers from the real task contract instead of the Node SSO/auth mock. `POST /api/projects/{projectId}/ask` loads the client item snapshot plus any generated `Task` keyed by `board_item_id`, parent feature quotes and answered/skipped PM questions, and calls Gemini through `get_chat_model()` only. Cite or stay silent: no citation ⇒ no assertion; fabricated decision ids are dropped. Global Memory / `AskView` still hits Node `/api/ask`. Turns are not written to `chat_messages`.
+
+**Files:** new — `backend/app/agents/ask.py`, `backend/tests/test_ask.py`, `plans/task-ask-ai.md`. Extended — `backend/app/agents/prompts.py` (`ASK`), `backend/app/schemas/mvp.py` (`AskCitation`, `AskTurn`, `AskRequest`, `AskResponse`), `backend/app/api/routes/mvp.py` (`POST …/ask`), `client/src/types.ts`, `client/src/lib/backend.ts` (`askAboutItem`), `client/src/context/ProjectContext.tsx` (drawer `askQuestion` branches to FastAPI), `client/src/components/Drawer.tsx` (honest empty state, pinned composer).
+
+**Verified:** prior session — fake-model tests for published task (source-quote cite), question outside context (refusal, no asserting citations), empty `GCP_PROJECT_ID` (structured 4xx `{problem, cause, fix}`), and hand-created card (item snapshot only). `test_no_direct_sdk.py` stays the SDK guard. Client drawer Ask tab + `askAboutItem` were wired in the same change.
+
+**Open:** Decision Records, Qdrant retrieval, and streaming are still out of scope. Global Memory remains the Node mock.
+
+**Commit:** not committed.
+
+---
+
+## 2026-09-27 — Chat-orchestrated project workflow
+
+**What:** on `mpv_v01`, New Project no longer dead-ends in the fake `ClarificationChat` Q&A (`ui_ux_design.md` §4.10–4.11). After name + description (+ optional files), the PM lands on a **Chat** view that drives ingest → feature review → task generation → **Add N to board**. Approve is disabled (and the API returns 409) while a feature has open questions; skip-remaining is a human action, never an auto-answer; reject excludes a feature from task generation. Sources / Features / Board stay as inspection. This is an approved spec gap: the written spec still describes generic clarification chat → Sources; chat is now the workflow.
+
+**Files:** new — `client/src/components/{ProjectChat,ChatBlocks,FeatureCards,WorkflowStepper}.tsx`, `client/src/lib/workflow.ts`, `backend/migrations/versions/d7f1c4e82b19_feature_review_status_chat_kind.py`, `backend/tests/test_mvp_review.py`, `plans/chat-workflow.md`. Extended — `backend/app/{models,schemas,api/routes}/mvp.py` (`review_status`, `PATCH /features/{id}`, `POST /clarification/skip-remaining`, `GET /workflow`, `chat_messages.kind`), `client/src/{types.ts,lib/backend.ts,context/ProjectContext.tsx,App.tsx,components/{NewProjectSetup,FeaturesView,FeatureClarification,ChatThread}.tsx}`. Unused leftover — `ClarificationChat.tsx` (no remaining imports).
+
+**Verified:** `cd backend && poetry run pytest` 58/58 (includes 9 review-contract tests: pending default, camelCase PATCH, 409 on approve-with-open-questions, reject does not start tasks, skip-remaining never answers, workflow `kind=decision`); `poetry run ruff check .` clean. `Feature.reviewStatus` / `ChatMessage.kind` match `schemas/mvp.py` (`pending|approved|rejected`, `progress|decision|question|text`, JSON camelCase via `to_camel`). `cd client && ./node_modules/.bin/tsc --noEmit` clean; `npm test` 37/37. Applied `alembic upgrade head` on `nexus_dev` (`c4e8b2a91d07` → `d7f1c4e82b19`) — live `GET /features` and `GET /workflow` were 500 until then (`column chat_messages.kind does not exist`). Against existing project `proj-1790517936666` after that: approve-with-open-Q → 409; skip-remaining → 200 (`changes: ["Skipped remaining"]`, `remaining: 0`); approve → 200; reject → 200; `GET /workflow` returns decision/question rows. Client `canApproveFeature` disables Approve while `openQuestions > 0`. `GET /api/health/ready` → database connected, pgvector 0.8.6 (already-running uvicorn, not started here).
+
+**Open:** no `preview_start` / launch-preview tool in this session (`.claude/launch.json` still lists `nexus-client` / `nexus-backend`). Cursor browser MCP created tabs that vanished before navigation, so the UI path (create project → Chat ingest → review-as-you-go → Add N → Board, plus Sources/Features) was **not** driven in a browser. Live API exercise mutated `proj-1790517936666` review rows (Hybrid Search approved after a planted skip, Initial Ingestion approved, Access Control rejected). `.claude/plans/we-want-nexus-to-sorted-shell.md` is still missing from the workspace. `ClarificationChat.tsx` is leftover unused code.
+
+**Commit:** not committed.
+
+---
+
+## 2026-09-27 — MVP v0: document → features → clarification → tasks
+
+**What:** on `mpv_v0`, the P6 ingestion stack (Qdrant, Redis/arq, registry matching, review queue)
+is replaced by a presentation-sized LangGraph agent flow. Upload a PDF/DOCX/Markdown file; convert
+and split deterministically; five agents (Extractor, Merger, Analyst, Clarifier, Planner/Reviewer)
+run in three graphs (`document` / `clarification` / `tasks`); the PM answers questions at
+`interrupt()`; approved tasks become Kanban cards via Node `POST /api/items`. Gemini on Vertex is
+reached only through LangChain in `backend/app/agents/llm.py`. Postgres only — graphs run as
+in-process asyncio tasks with the existing Postgres checkpointer.
+
+**Files:** new — `backend/app/{ingest/{convert,split,cite}.py, agents/{llm,prompts,tools,extractor,analyst,clarifier,planner}.py, agents/graphs/{document,clarification,tasks,_persist}.py, models/mvp.py, schemas/mvp.py, api/routes/mvp.py}`, `backend/migrations/versions/c4e8b2a91d07_mvp_v0_tables.py`, `backend/tests/{fakes.py,test_ingest_*,test_extractor,test_analyst,test_clarification_graph,test_task_graph,test_mvp_routes,test_mvp_recovery,test_llm,test_no_direct_sdk}.py`, `client/src/components/{FeaturesView,FeatureClarification,ChatThread}.tsx`, `.claude/agents/mvp-*.md`. Rewritten — `backend/app/{config.py,main.py,models/__init__.py}`, `backend/pyproject.toml` + lock (dropped qdrant/arq/redis; added langchain-google-genai, langchain-core, langchain-google-vertexai; `google-cloud-storage` bumped to ≥3.10 for the Vertex fallback), `client/src/{types.ts,lib/backend.ts,context/ProjectContext.tsx,App.tsx,components/ClarificationChat.tsx,components/VerdictRow.tsx}`. Removed — `app/{ai,vector,queue}/`, P6 ingest pipeline modules and `ingestion.py` routes/tests, `docker-compose.yml`, `nexus-worker` launch entry, `ingestion-*` agents. Plans — `plans/ingestion.md` already `done` / superseded; `plans/mvp-v0.md` flipped to `done`.
+
+**Verified:** `cd backend && poetry run pytest` 49/49 (fake chat model, no network); `poetry run ruff check .` clean; scratch-DB `alembic upgrade head → downgrade -1 → upgrade head` on `nexus_mvp_scratch` (then dropped); `cd client && npx tsc --noEmit` clean and `npm test` 37/37. Short boot: `GET /api/health` → `ok`, `GET /api/health/ready` → database connected, pgvector 0.8.6. Grep guard: no `google.genai` / chat-model construction outside `agents/llm.py`.
+
+**Open:** live Vertex/Docling demo (three-file walkthrough, Clarify → Generate tasks → Add to board) was not run — no `gcloud` ADC / preview servers in this session — so `plans/mvp-v0-demo.md` was not written. `nexus_dev` is still on the P6 schema; startup recovery skips until `alembic upgrade head` is applied there. `.claude/plans/we-want-nexus-to-sorted-shell.md` is missing from the workspace, so the master-plan MVP phase row was not added. Features view remains an approved `ui_ux_design.md` gap.
+
+**Commit:** not committed.
+
+---
+
 ## 2026-09-26 — Ingestion pipeline removed; SQLite board store kept
 
 **What:** at the owner's request the whole ingestion pipeline was taken out of `ui_v2`, and the SQLite board store (`client/db/`,

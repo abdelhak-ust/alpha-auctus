@@ -27,6 +27,7 @@ export const CommandBar: React.FC<CommandBarProps> = ({ onClose }) => {
     const trimmed = input.trim();
     if (!trimmed) {
       return [
+        { type: 'nav', label: 'Go to Chat (workflow)', action: () => { setActiveView('chat'); onClose(); }, shortcut: 'g c' },
         { type: 'nav', label: 'Go to Kanban Board', action: () => { setActiveView('board'); onClose(); }, shortcut: 'g b' },
         { type: 'nav', label: 'Go to Verdicts Inbox', action: () => { setActiveView('verdicts'); onClose(); }, shortcut: 'g v' },
         { type: 'nav', label: 'Go to Runs (agent execution)', action: () => { setActiveView('runs'); onClose(); }, shortcut: 'g u' },
@@ -35,7 +36,8 @@ export const CommandBar: React.FC<CommandBarProps> = ({ onClose }) => {
         { type: 'nav', label: 'Go to Memory (Ask Questions)', action: () => { setActiveView('memory'); onClose(); }, shortcut: 'g m' },
         { type: 'nav', label: 'Go to Impact Graph', action: () => { setActiveView('impact'); onClose(); }, shortcut: 'g i' },
         { type: 'nav', label: 'Go to BRD/Spec Authoring', action: () => { setActiveView('author'); onClose(); }, shortcut: 'g a' },
-        { type: 'nav', label: 'Go to Sources & Ingestion', action: () => { setActiveView('sources'); onClose(); }, shortcut: 'g s' },
+        { type: 'nav', label: 'Go to Sources', action: () => { setActiveView('sources'); onClose(); }, shortcut: 'g s' },
+        { type: 'nav', label: 'Go to Features', action: () => { setActiveView('features'); onClose(); }, shortcut: 'g f' },
         { type: 'nav', label: 'Go to Settings & BYOK config', action: () => { setActiveView('settings'); onClose(); }, shortcut: 'g d' }
       ];
     }

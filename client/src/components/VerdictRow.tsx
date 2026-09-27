@@ -10,15 +10,11 @@ interface VerdictRowProps {
 }
 
 export const VerdictRow: React.FC<VerdictRowProps> = ({ item, isIngest = false }) => {
-  const { resolveVerdict, resolveIngestItem, isBackendIngestItem, setSelectedCardId, state } = useProject();
+  const { resolveVerdict, resolveIngestItem, setSelectedCardId, state } = useProject();
   const [expanded, setExpanded] = useState(false);
 
   const verdict = item.verdict;
-  // Backend sweep flags arrive as low-confidence 'net-new' (plans/ingestion.md §11.3):
-  // never hidden — shown with the "Needs Review" badge + warning tint, and they have
-  // no bulk action (this row only offers single-item Confirm / Dismiss).
-  const isSweepFlag = isIngest && !!verdict && verdict.type === 'net-new' && isBackendIngestItem(item.id.toString());
-  if (!verdict || (verdict.type === 'net-new' && !isSweepFlag)) return null;
+  if (!verdict || verdict.type === 'net-new') return null;
 
   const handleAction = async (action: 'confirm' | 'dismiss' | 'supersede' | 'merge', targetId?: string) => {
     if (isIngest) {
@@ -34,9 +30,6 @@ export const VerdictRow: React.FC<VerdictRowProps> = ({ item, isIngest = false }
   };
 
   const getCandidateTitle = (cand: Candidate) => {
-    // Backend candidate ids are opaque (`incoming:v2`, `current:v1`, `flag:<id>`) —
-    // only purely numeric ids refer to board items/decisions.
-    if (!/^\d+$/.test(String(cand.id))) return cand.title;
     if (cand.type === 'decision') {
       const d = state?.decisions.find(dec => dec.id === parseInt(cand.id));
       return d ? d.title : cand.title;
@@ -47,7 +40,7 @@ export const VerdictRow: React.FC<VerdictRowProps> = ({ item, isIngest = false }
   };
 
   return (
-    <div className={`p-4 border rounded-[var(--r-md)] transition-all ${isSweepFlag ? 'border-amber-200 dark:border-amber-900 bg-amber-50/40 dark:bg-amber-950/10' : verdict.type === 'conflict' ? 'border-red-200 dark:border-red-950 bg-red-50/20 dark:bg-red-950/5' : 'border-stone-200 dark:border-stone-800 bg-stone-50/40 dark:bg-stone-900/40'} hover:border-stone-400 dark:hover:border-stone-600`}>
+    <div className={`p-4 border rounded-[var(--r-md)] transition-all ${verdict.type === 'conflict' ? 'border-red-200 dark:border-red-950 bg-red-50/20 dark:bg-red-950/5' : 'border-stone-200 dark:border-stone-800 bg-stone-50/40 dark:bg-stone-900/40'} hover:border-stone-400 dark:hover:border-stone-600`}>
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
         {/* Left column: Title and descriptions */}
         <div className="flex-1">
@@ -58,7 +51,7 @@ export const VerdictRow: React.FC<VerdictRowProps> = ({ item, isIngest = false }
             <h3 className="text-[14px] font-semibold text-stone-900 dark:text-stone-100 leading-snug">
               {item.title}
             </h3>
-            <VerdictBadge type={isSweepFlag ? 'low-confidence' : verdict.type} confidence={verdict.confidence} />
+            <VerdictBadge type={verdict.type} confidence={verdict.confidence} />
           </div>
 
           <p className="mt-1.5 text-xs text-stone-500 dark:text-stone-400 line-clamp-2 leading-relaxed">
@@ -75,22 +68,7 @@ export const VerdictRow: React.FC<VerdictRowProps> = ({ item, isIngest = false }
 
         {/* Right column: Immediate Triage options */}
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          {isSweepFlag ? (
-            <>
-              <button
-                onClick={() => handleAction('confirm')}
-                className="px-3 py-1.5 rounded-[var(--r-sm)] bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:opacity-90 active:scale-95 transition-transform cursor-pointer"
-              >
-                Confirm
-              </button>
-              <button
-                onClick={() => handleAction('dismiss')}
-                className="px-3 py-1.5 rounded-[var(--r-sm)] border border-stone-200 dark:border-stone-800 text-stone-600 dark:text-stone-300 text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-850 cursor-pointer"
-              >
-                Dismiss
-              </button>
-            </>
-          ) : verdict.type === 'conflict' ? (
+          {verdict.type === 'conflict' ? (
             <>
               <button
                 onClick={() => handleAction('supersede', verdict.candidates[0]?.id)}

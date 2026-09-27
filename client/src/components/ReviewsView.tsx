@@ -205,7 +205,7 @@ export const ReviewsView: React.FC = () => {
         <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-3" />
         <h3 className="font-semibold text-stone-900 dark:text-stone-100 text-sm">Nothing to review yet</h3>
         <p className="text-xs text-stone-500 mt-1 max-w-sm mx-auto leading-relaxed">
-          When an agent finishes a run, its implementation lands here and Nexus checks it against the task — per requirement, with citations. This is where you confirm the agent built what was actually asked.
+          When an agent finishes a run, its implementation lands here and Alpha Auctus checks it against the task — per requirement, with citations. This is where you confirm the agent built what was actually asked.
         </p>
         <button onClick={() => setActiveView('runs')} className="mt-4 px-3 py-1.5 rounded-[var(--r-sm)] bg-[var(--accent)] text-white text-xs font-semibold cursor-pointer">See runs</button>
       </div>

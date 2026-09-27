@@ -106,7 +106,7 @@ export const DeliveryView: React.FC = () => {
         <Rocket className="w-8 h-8 text-stone-300 mx-auto mb-3" />
         <h3 className="font-semibold text-stone-900 dark:text-stone-100 text-sm">No deliveries yet</h3>
         <p className="text-xs text-stone-500 mt-1 max-w-sm mx-auto leading-relaxed">
-          Once a review is approved, the change moves through the delivery pipeline — PR, CI/CD, deploy — and Nexus keeps re-checking coverage against the task as it goes.
+          Once a review is approved, the change moves through the delivery pipeline — PR, CI/CD, deploy — and Alpha Auctus keeps re-checking coverage against the task as it goes.
         </p>
         <button onClick={() => setActiveView('reviews')} className="mt-4 px-3 py-1.5 rounded-[var(--r-sm)] bg-[var(--accent)] text-white text-xs font-semibold cursor-pointer">Go to reviews</button>
       </div>

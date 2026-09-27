@@ -283,25 +283,16 @@ Schema:
 }
 
 // Items endpoints
-// A verdict analysis runs in the background after an item is created/edited. It writes its result
-// with setItemVerdict, which is a no-op if the item was deleted in the meantime.
-function analyseInBackground(projectId: string, itemId: number, title: string, description: string) {
-  const snapshot = repo.getProject(projectId);
-  if (!snapshot) return;
-  performVerdictAnalysis(snapshot, title, description)
-    .then(verdict => repo.setItemVerdict(projectId, itemId, verdict))
-    .catch(error => console.error(`Verdict analysis failed for item #${itemId}:`, error));
-}
+// Create is immediate. Task-vs-task verdicts are checked by FastAPI
+// (POST /api/projects/:id/verdicts/check) from ProjectContext — Node must not
+// run analyseInBackground here or the mock/Gemini board+decisions path overwrites
+// the real verdict. resolveVerdict stays on Node.
 
 app.post('/api/items', async (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
   const newItem = repo.createItem(proj.id, req.body);
-
-  // Async trigger to compile check status (the snapshot includes the new item, as it always did)
-  analyseInBackground(proj.id, newItem.id, newItem.title, newItem.description);
-
   res.json(newItem);
 });
 
@@ -317,7 +308,8 @@ app.put('/api/items/:id', (req, res) => {
 
   const { projectId, ...patch } = req.body;
 
-  // If title or description changed, re-analyse background verdict
+  // Title/description edits keep the checking chip until the client persists
+  // the FastAPI verdict. Do not kick off Node background analysis.
   const needsRecheck =
     (patch.title !== undefined && patch.title !== prevItem.title) ||
     (patch.description !== undefined && patch.description !== prevItem.description);
@@ -331,9 +323,6 @@ app.put('/api/items/:id', (req, res) => {
   }
 
   const updatedItem = repo.updateItem(proj.id, itemId, patch)!;
-  if (needsRecheck) {
-    analyseInBackground(proj.id, itemId, updatedItem.title, updatedItem.description);
-  }
   res.json(updatedItem);
 });
 

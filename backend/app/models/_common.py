@@ -1,52 +1,51 @@
-"""Shared column helpers and enum value sets for the ingestion tables.
+"""Shared column helpers and enum value sets for the MVP tables.
 
 Enum-like columns are plain strings guarded by CHECK constraints (not Postgres ENUM types):
-the lifecycle grows as the registry/task-factory stages land, and a CHECK is a one-line
-migration to widen, where an ENUM needs ALTER TYPE gymnastics.
+widening a CHECK is a one-line migration; an ENUM needs ALTER TYPE gymnastics.
 """
 
-import uuid
 from datetime import datetime
 
 from sqlalchemy import CheckConstraint, DateTime, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-# ingestion.md §4.3 / §11.1 IngestionStatus
-INGESTION_STATUSES: tuple[str, ...] = (
-    "pending",
-    "parsed",
-    "extracted",
-    "consolidated",
-    "done",
+# plans/mvp-v0.md — documents.status
+DOCUMENT_STATUSES: tuple[str, ...] = (
+    "uploaded",
+    "converting",
+    "extracting",
+    "analysing",
+    "ready",
     "failed",
 )
 
-# ingestion.md §4.3 (doc_type); contract §5: chat answers are documents with doc_type "chat".
-DOC_TYPES: tuple[str, ...] = ("upload", "transcript", "email", "ticket", "sheet", "chat")
-
-# feature-pipeline-contract.md §3 / §11.1 FeatureLifecycle
-LIFECYCLE_STATES: tuple[str, ...] = (
+# plans/mvp-v0.md — features.status
+FEATURE_STATUSES: tuple[str, ...] = (
     "extracted",
-    "consolidated",
-    "conflicted",
-    "classified",
-    "assessing",
-    "awaiting_answers",
-    "answered",
-    "dev_ready",
-    "overridden",
-    "stale",
-    "in_breakdown",
-    "needs_review",
-    "broken_down",
+    "analysed",
+    "needs_clarification",
+    "clarified",
+    "planning",
+    "tasks_ready",
 )
 
-# contract §2 feature_relations.relation_type
-RELATION_TYPES: tuple[str, ...] = ("depends_on", "extends", "conflicts_with")
+# Chat workflow UX — features.review_status (human review, not pipeline status)
+FEATURE_REVIEW_STATUSES: tuple[str, ...] = ("pending", "approved", "rejected")
 
-# §11.1 review_items
-REVIEW_KINDS: tuple[str, ...] = ("conflict", "sweep_flag")
-REVIEW_STATUSES: tuple[str, ...] = ("open", "approved", "dismissed")
+# plans/mvp-v0.md — feature_questions.status
+QUESTION_STATUSES: tuple[str, ...] = ("open", "answered", "skipped")
+
+# plans/mvp-v0.md — tasks.status
+TASK_STATUSES: tuple[str, ...] = ("draft", "approved", "on_board")
+
+CHAT_ROLES: tuple[str, ...] = ("ai", "pm")
+
+# Optional chat_messages.kind — NULL is allowed (treated as text by the API)
+CHAT_KINDS: tuple[str, ...] = ("progress", "decision", "question", "text")
+
+PRIORITIES: tuple[str, ...] = ("P0", "P1", "P2", "P3")
+
+ESTIMATES: tuple[str, ...] = ("S", "M", "L")
 
 
 def check_in(column: str, values: tuple[str, ...], name: str) -> CheckConstraint:
@@ -55,8 +54,8 @@ def check_in(column: str, values: tuple[str, ...], name: str) -> CheckConstraint
     return CheckConstraint(f"{column} IN ({quoted})", name=name)
 
 
-def uuid_pk() -> Mapped[uuid.UUID]:
-    return mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+def uuid_pk():
+    return mapped_column(Uuid, primary_key=True, default=__import__("uuid").uuid4)
 
 
 def created_at_col() -> Mapped[datetime]:

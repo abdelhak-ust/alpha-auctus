@@ -1,13 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, ArrowRight, Sparkles, Check, Loader2, FileText, Video, Image as ImageIcon } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ArrowRight, Sparkles, Check, Loader2, FileText, Video, Image as ImageIcon } from 'lucide-react';
 import { useProject } from '../context/ProjectContext.js';
 import { ClarificationTurn, DraftSourceKind } from '../types.js';
-
-interface ChatMsg {
-  role: 'ai' | 'user';
-  text: string;
-  cite?: string; // source name referenced by the AI
-}
+import { ChatThread, ChatThreadMessage } from './ChatThread.js';
 
 const kindIcon: Record<DraftSourceKind, React.ComponentType<{ className?: string }>> = {
   file: FileText,
@@ -34,7 +29,7 @@ export const ClarificationChat: React.FC = () => {
   );
 
   const firstSource = setupDraft.sources[0];
-  const [messages, setMessages] = useState<ChatMsg[]>(() => [
+  const [messages, setMessages] = useState<ChatThreadMessage[]>(() => [
     {
       role: 'ai',
       text: setupDraft.sources.length
@@ -60,9 +55,6 @@ export const ClarificationChat: React.FC = () => {
     return () => timers.forEach(clearTimeout);
   }, [total]);
 
-  const logRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' }); }, [messages]);
-
   const questionsDone = qIndex >= questions.length - 1 && answers.length >= questions.length;
   const canGenerate = answers.length >= 1; // completes the flow once core questions are answered
 
@@ -72,7 +64,7 @@ export const ClarificationChat: React.FC = () => {
     const nextAnswers = [...answers, { question: answered, answer: input.trim() }];
     setAnswers(nextAnswers);
 
-    const newMsgs: ChatMsg[] = [{ role: 'user', text: input.trim() }];
+    const newMsgs: ChatThreadMessage[] = [{ role: 'user', text: input.trim() }];
     const next = qIndex + 1;
     if (next < questions.length) {
       newMsgs.push({ role: 'ai', text: questions[next] });
@@ -129,69 +121,31 @@ export const ClarificationChat: React.FC = () => {
         )}
       </header>
 
-      {/* Chat log */}
-      <div ref={logRef} aria-live="polite" className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="max-w-[720px] mx-auto space-y-4">
-          {messages.map((m, i) => (
-            m.role === 'ai' ? (
-              <div key={i} className="flex items-start gap-2.5">
-                <span className="w-7 h-7 shrink-0 grid place-items-center rounded-full bg-[var(--accent-bg)] text-[var(--accent)] mt-0.5">
-                  <Bot className="w-4 h-4" />
-                </span>
-                <div className="space-y-1.5">
-                  <div className="inline-block bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-800 rounded-[var(--r-md)] px-3.5 py-2.5 text-sm text-stone-800 dark:text-stone-200 leading-relaxed">
-                    {m.text}
-                  </div>
-                  {m.cite && (
-                    <div className="text-[10px] font-mono text-stone-400 pl-1">cited: {m.cite}</div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div key={i} className="flex justify-end">
-                <div className="inline-block max-w-[80%] bg-[var(--accent)] text-white rounded-[var(--r-md)] px-3.5 py-2.5 text-sm leading-relaxed">
-                  {m.text}
-                </div>
-              </div>
-            )
-          ))}
+      <div className="flex-1 overflow-hidden px-6 py-6">
+        <div className="max-w-[720px] mx-auto h-full flex flex-col">
+          <ChatThread
+            messages={messages}
+            input={input}
+            onInput={setInput}
+            onSend={send}
+            sending={generating}
+            placeholder={questionsDone ? 'Add anything else…' : 'Type your answer…'}
+            footer={
+              <button
+                onClick={handleGenerate}
+                disabled={!canGenerate || generating}
+                className="w-full py-2.5 rounded-[var(--r-md)] bg-[var(--accent)] text-white text-sm font-semibold hover:opacity-95 active:scale-[0.99] transition-transform disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2"
+              >
+                {generating ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Generating tasks…</>
+                ) : (
+                  <><Sparkles className="w-4 h-4" /> Generate tasks <ArrowRight className="w-4 h-4" /></>
+                )}
+              </button>
+            }
+          />
         </div>
       </div>
-
-      {/* Composer + generate */}
-      <footer className="border-t border-stone-200/60 dark:border-stone-850/60 px-6 py-4 shrink-0">
-        <div className="max-w-[720px] mx-auto space-y-2.5">
-          <div className="flex items-end gap-2">
-            <textarea
-              rows={1}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder={questionsDone ? 'Add anything else…' : 'Type your answer…'}
-              aria-label="Your answer"
-              className="flex-1 resize-none bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-800 rounded-[var(--r-md)] px-3 py-2.5 text-sm text-stone-800 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:border-[var(--accent)] max-h-32"
-            />
-            <button
-              onClick={send}
-              disabled={!input.trim()}
-              className="shrink-0 px-4 py-2.5 rounded-[var(--r-md)] border border-stone-200 dark:border-stone-800 text-sm font-semibold text-stone-600 dark:text-stone-300 hover:border-[var(--accent)] hover:text-[var(--accent)] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-            >
-              Send
-            </button>
-          </div>
-          <button
-            onClick={handleGenerate}
-            disabled={!canGenerate || generating}
-            className="w-full py-2.5 rounded-[var(--r-md)] bg-[var(--accent)] text-white text-sm font-semibold hover:opacity-95 active:scale-[0.99] transition-transform disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2"
-          >
-            {generating ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Generating tasks…</>
-            ) : (
-              <><Sparkles className="w-4 h-4" /> Generate tasks <ArrowRight className="w-4 h-4" /></>
-            )}
-          </button>
-        </div>
-      </footer>
     </div>
   );
 };

@@ -1,6 +1,6 @@
 """Async SQLAlchemy engine + session factory, and a FastAPI dependency."""
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -11,6 +11,19 @@ settings = get_settings()
 engine = create_async_engine(settings.database_url, echo=False, pool_pre_ping=True)
 
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+# Tests replace this so graph nodes share the rolled-back db_session.
+_session_factory_override: Callable[[], AsyncSession] | None = None
+
+
+def set_session_factory(factory: Callable[[], object] | None) -> None:
+    """`factory()` must be an async context manager yielding an AsyncSession."""
+    global _session_factory_override
+    _session_factory_override = factory
+
+
+def get_session_factory():
+    return _session_factory_override or async_session_factory
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

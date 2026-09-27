@@ -237,22 +237,197 @@ export interface DBState {
   };
 }
 
-// ── Ingestion stage (plans/ingestion.md §11.1 — frozen contract) ───────────────
-// Served directly by backend/ (FastAPI) under /api/projects/{projectId}/…; the
-// matching Pydantic schemas live in backend/app/schemas/ingestion.py.
-export type IngestionStatus = 'pending' | 'parsed' | 'extracted' | 'consolidated' | 'done' | 'failed';
-export interface IngestDocument {
-  id: string; projectId: string; filename: string; status: IngestionStatus;
-  error?: string; duplicate?: boolean; featureCount: number; uploadedAt: string;
+// ── MVP v0 (plans/mvp-v0.md) — backend/ FastAPI under /api/projects/{projectId}/…
+// Matching Pydantic schemas: backend/app/schemas/mvp.py (camelCase on the wire).
+export type DocumentStatus = 'uploaded' | 'converting' | 'extracting' | 'analysing' | 'ready' | 'failed';
+export interface DocumentProgress { step: string; done: number; total: number; }
+export interface MvpDocument {
+  id: string; projectId: string; filename: string; mimeType?: string; sizeBytes?: number;
+  status: DocumentStatus; progress?: DocumentProgress; error?: string; duplicate?: boolean;
+  featureCount: number; uploadedAt: string;
 }
-export type FeatureLifecycle = 'extracted' | 'consolidated' | 'conflicted' | 'classified' | 'assessing'
-  | 'awaiting_answers' | 'answered' | 'dev_ready' | 'overridden' | 'stale'
-  | 'in_breakdown' | 'needs_review' | 'broken_down';
-export interface SourceRef {
-  docId: string; docType: string; chunkId: string; section: string;
-  charStart: number; charEnd: number; snippet: string;
+export interface SourceQuote {
+  quote: string; verified: boolean; charStart?: number; charEnd?: number;
+  origin?: 'document' | 'pm';
 }
-export interface RegistryFeature {
-  id: string; projectId: string; name: string; description: string; versionNo: number;
-  lifecycleState: FeatureLifecycle; sourceRefs: SourceRef[]; updatedAt: string;
+export interface CitedRequirement { text: string; quote?: string; }
+export interface CitedCriterion { given: string; when: string; then: string; quote?: string; }
+export interface FeatureDetails {
+  description: string; userRoles: string[];
+  functionalRequirements: CitedRequirement[];
+  acceptanceCriteria: CitedCriterion[];
+  constraints: string[]; dependencies: string[]; outOfScope: string[];
+}
+export type FeatureStatus = 'extracted' | 'analysed' | 'needs_clarification' | 'clarified' | 'planning' | 'tasks_ready';
+export type FeatureReviewStatus = 'pending' | 'approved' | 'rejected';
+export type GenerationMode = 'auto' | 'review_as_you_go';
+export type ChatMessageKind = 'progress' | 'decision' | 'question' | 'text';
+export type WorkflowStage = 'ingesting' | 'choose_feature_mode' | 'review_features' | 'choose_task_mode' | 'review_tasks' | 'publish';
+export interface FeatureQuestion {
+  id: string; featureId: string; question: string; why: string; targetField: string;
+  isFollowUp: boolean; status: 'open' | 'answered' | 'skipped';
+  answer?: string; answeredAt?: string; ordinal: number;
+}
+export type TaskStatus = 'draft' | 'approved' | 'on_board';
+export type Estimate = 'S' | 'M' | 'L';
+export interface GeneratedTask {
+  id: string; featureId: string; title: string; description: string; area: string;
+  priority: Priority; acceptanceCriteria: CitedCriterion[]; estimate: Estimate;
+  tracesTo: string[]; subtasks: string[]; definitionOfDone: string[];
+  reviewNotes?: string; status: TaskStatus;
+  boardItemId?: number; ordinal: number;
+}
+export interface Feature {
+  id: string; projectId: string; documentId: string; name: string; summary: string;
+  details?: FeatureDetails; sourceQuotes: SourceQuote[]; status: FeatureStatus;
+  reviewStatus: FeatureReviewStatus;
+  position: number; questions: FeatureQuestion[]; tasks: GeneratedTask[];
+  createdAt: string; updatedAt: string;
+}
+export interface FeaturePatch {
+  reviewStatus?: FeatureReviewStatus;
+  name?: string;
+  summary?: string;
+}
+export interface ChatMessage {
+  id: string; projectId: string; role: 'ai' | 'pm'; text: string;
+  questionId?: string; featureId?: string; createdAt: string;
+  kind?: ChatMessageKind;
+}
+export interface WorkflowState {
+  history: ChatMessage[];
+}
+export interface AgentActivity {
+  id: string; ts: string; graph: string; node: string; agent?: string; detail: string;
+}
+export interface ClarificationNext {
+  questionId: string; featureId: string; featureName: string; question: string; why: string;
+}
+export interface ClarificationState {
+  history: ChatMessage[]; next: ClarificationNext | null; remaining: number;
+}
+export interface ClarificationAnswerResponse {
+  feature?: Feature; changes: string[]; next: ClarificationNext | null; remaining: number;
+}
+
+// Drawer Ask AI (plans/task-ask-ai.md) — cited answer scoped to one board card.
+export interface AskCitation {
+  id: string;
+  type: 'item' | 'decision' | 'source';
+  title: string;
+  snippet?: string;
+}
+export interface AskTurn { role: 'user' | 'ai'; text: string }
+export interface AskResponse { answer: string; citations: AskCitation[] }
+
+// Author documents (POST /api/projects/{projectId}/author)
+export type AuthorDocType = 'brd' | 'spec' | 'tree';
+export type AuthorTimeFrame = '30' | '90' | '365';
+export interface AuthorBoardItem {
+  id: number;
+  title: string;
+  description: string;
+  area: string;
+  status: Status;
+  createdAt: string;
+  verdictType?: VerdictType;
+}
+export interface AuthorDecision {
+  id: number;
+  title: string;
+  description: string;
+  area: string;
+}
+export interface AuthorConflict {
+  id: string;
+  title: string;
+}
+export interface AuthorRequest {
+  type: AuthorDocType;
+  area: string;
+  timeFrame: AuthorTimeFrame;
+  boardItems: AuthorBoardItem[];
+  decisions: AuthorDecision[];
+}
+export interface AuthorResponse {
+  document: string;
+  unresolvedConflictsCount: number;
+  conflicts: AuthorConflict[];
+  citations: AskCitation[];
+}
+
+// Trace impact graph (plans/trace-impact-graph.md)
+export type ImpactNodeType = 'item' | 'area' | 'decision' | 'source';
+export type ImpactEdgeType =
+  | 'depends-on'
+  | 'affects'
+  | 'duplicate'
+  | 'contradicts'
+  | 'supersedes';
+
+export interface ImpactNode {
+  id: string;
+  type: ImpactNodeType;
+  label: string;
+}
+
+export interface ImpactEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: ImpactEdgeType;
+  label?: string;
+}
+
+export interface ImpactNeighbor {
+  id: string;
+  type: ImpactNodeType;
+  label: string;
+  edgeType: ImpactEdgeType;
+}
+
+export interface ImpactExplainRequest {
+  nodeId: string;
+  node: ImpactNode;
+  neighbors: ImpactNeighbor[];
+  verdictSnippet?: string;
+}
+
+export interface ImpactExplainResponse {
+  headline: string;
+  text: string;
+  citations: AskCitation[];
+}
+
+export type ImpactExplain = ImpactExplainResponse;
+
+// Trace / impact graph (plan: live Trace / impact graph). Client derives the
+// graph; POST /impact/explain returns a cited summary of the selected subgraph.
+export type ImpactNodeKind = 'item' | 'decision' | 'area' | 'source';
+export type ImpactEdgeKind = 'affects' | 'depends-on' | 'contradicts' | 'supersedes' | 'duplicate';
+
+export interface ImpactNodeSnapshot {
+  id: string;
+  type: ImpactNodeKind;
+  label: string;
+}
+
+export interface ImpactNeighbor {
+  id: string;
+  type: ImpactNodeKind;
+  label: string;
+  edgeType: ImpactEdgeKind;
+}
+
+export interface ImpactExplainRequest {
+  nodeId: string;
+  node: ImpactNodeSnapshot;
+  neighbors: ImpactNeighbor[];
+  verdictSnippet?: string;
+}
+
+export interface ImpactExplainResponse {
+  headline: string;
+  text: string;
+  citations: AskCitation[];
 }

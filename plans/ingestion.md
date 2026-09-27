@@ -1,9 +1,10 @@
 ---
 feature: Document ingestion → Feature Registry (stage 1 of 3)
 phase: P6
-status: active
+status: done
 created: 2026-09-26
-completed:
+completed: 2026-09-27
+note: built and verified at cf0f298 (live Qdrant/Redis/Vertex path not exercised); superseded on branch mpv_v0 by plans/mvp-v0.md
 ---
 
 # Document Ingestion & Feature-Understanding Pipeline

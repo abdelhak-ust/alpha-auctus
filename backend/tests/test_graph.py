@@ -1,4 +1,4 @@
-"""app.graph — audit helper (add + flush, never commit) and checkpointer DSN handling."""
+"""app.graph — audit helper and checkpointer DSN handling (reused by MVP)."""
 
 import uuid
 
@@ -30,19 +30,24 @@ async def test_record_audit_flushes_without_committing(db_session, monkeypatch):
     fid = uuid.uuid4()
 
     event = await record_audit(
-        db_session, project_id="p1", feature_id=str(fid), graph="ingest",
-        node="consolidate", type="merged", detail={"k": 1},
+        db_session,
+        project_id="p1",
+        feature_id=str(fid),
+        graph="document",
+        node="persist",
+        type="agent_step",
+        detail={"k": 1},
     )
 
-    assert event.id is not None  # flushed
-    row = (await db_session.execute(
-        select(AuditEvent).where(AuditEvent.id == event.id)
-    )).scalar_one()
-    assert (row.feature_id, row.detail, row.type) == (fid, {"k": 1}, "merged")
+    assert event.id is not None
+    row = (
+        await db_session.execute(select(AuditEvent).where(AuditEvent.id == event.id))
+    ).scalar_one()
+    assert (row.feature_id, row.detail, row.type) == (fid, {"k": 1}, "agent_step")
 
 
 async def test_record_audit_allows_no_feature(db_session):
     event = await record_audit(
-        db_session, project_id="p1", feature_id=None, graph="ingest", node="parse", type="x",
+        db_session, project_id="p1", feature_id=None, graph="document", node="convert", type="x"
     )
     assert event.feature_id is None and event.detail == {}
