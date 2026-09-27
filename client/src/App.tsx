@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useTransition, useMemo } from 'react';
+import React, { useState, useEffect, useTransition, useMemo, useRef } from 'react';
 import {
   ProjectProvider,
   useProject
@@ -89,6 +89,7 @@ import Markdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
 import { IngestItem, Item, Status, Priority, AgentKind } from './types.js';
 import { resolveAssignee, agentKindStyle } from './lib/assignee.js';
+import { BackendError, INGEST_ACCEPT, isIngestibleFile, withPeriod } from './lib/backend.js';
 
 function DashboardView() {
   const { state, addItem, updateItem, setSelectedCardId, refreshState, triggerToast } = useProject();
@@ -684,10 +685,11 @@ function AuthorView() {
 }
 
 function SourcesView() {
-  const { state, uploadDocument, resolveIngestItem, connectSource, activeProject } = useProject();
-  const [fileContent, setFileContent] = useState("");
-  const [fileName, setFileName] = useState("");
+  const { state, uploadDocument, connectSource, activeProject, triggerToast } = useProject();
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
+  const [uploadError, setUploadError] = useState<BackendError | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
 
   const connectedTypes = new Set((state?.sources || []).map(s => s.type));
@@ -716,21 +718,36 @@ function SourcesView() {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     const files = e.dataTransfer.files;
-    if (files && files[0]) {
-      const file = files[0];
-      setFileName(file.name);
-      const text = await file.text();
-      setFileContent(text);
-    }
+    if (files && files[0]) pickFile(files[0]);
   };
 
-  const handleSimulatedSubmit = async () => {
-    if (!fileContent.trim()) return;
+  // v1 ingests PDF/DOCX/MD/TXT only (plans/ingestion.md §9) — refuse others up front.
+  const pickFile = (file: File) => {
+    setUploadError(null);
+    if (!isIngestibleFile(file.name)) {
+      setSelectedFile(null);
+      triggerToast(`Can't ingest ${file.name} (unsupported file type). Upload a PDF, DOCX, Markdown or TXT file.`);
+      return;
+    }
+    setSelectedFile(file);
+  };
+
+  const handleSubmit = async () => {
+    if (!selectedFile) return;
     setSending(true);
-    await uploadDocument(fileName || "Ingested Document.txt", fileContent);
-    setFileContent("");
-    setFileName("");
-    setSending(false);
+    setUploadError(null);
+    try {
+      await uploadDocument(selectedFile);
+      setSelectedFile(null);
+    } catch (e) {
+      // Keep the file selected so Retry is one click; show problem + cause + fix inline (§7).
+      setUploadError(e instanceof BackendError
+        ? e
+        : new BackendError(`Couldn't upload ${selectedFile.name}`, 'unexpected client error', 'Retry, or check the browser console', 0));
+      if (!(e instanceof BackendError)) console.error(e);
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -820,6 +837,11 @@ function SourcesView() {
           <div
             onDragOver={handleDragOver}
             onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); fileInputRef.current?.click(); } }}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload files: documents and PDFs"
             className="border-2 border-dashed border-stone-250 dark:border-stone-800 rounded-[var(--r-lg)] p-8 text-center cursor-pointer hover:border-[var(--accent)] transition-colors select-none bg-stone-50/20 dark:bg-stone-900/15"
           >
             <FolderInput className="w-8 h-8 text-stone-400 mx-auto mb-2" />
@@ -827,26 +849,37 @@ function SourcesView() {
               Drag & Drop file transcript
             </h4>
             <p className="text-[10px] text-stone-500 mt-1">
-              Supports .txt, .json or planning sheets.
+              Supports PDF, DOCX, Markdown or TXT.
             </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={INGEST_ACCEPT}
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) pickFile(f); e.target.value = ''; }}
+            />
 
-            {fileName && (
-              <div className="mt-4 p-2.5 rounded bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-left">
-                <span className="font-mono text-xs font-bold font-sans">{fileName}</span>
-                <textarea
-                  value={fileContent}
-                  onChange={(e) => setFileContent(e.target.value)}
-                  rows={4}
-                  className="w-full bg-stone-50 dark:bg-stone-900 border border-stone-150 p-2 text-[11px] rounded font-mono mt-1.5 focus:outline-none"
-                />
+            {selectedFile && (
+              <div onClick={(e) => e.stopPropagation()} className="mt-4 p-2.5 rounded bg-white dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-left cursor-default">
+                <span className="font-mono text-xs font-bold font-sans">{selectedFile.name}</span>
+                <span className="ml-2 font-mono text-[10px] text-stone-400">{Math.max(1, Math.round(selectedFile.size / 1024))} KB</span>
                 <button
                   type="button"
-                  onClick={handleSimulatedSubmit}
+                  onClick={handleSubmit}
                   disabled={sending}
                   className="w-full mt-2.5 bg-[var(--accent)] text-white font-semibold rounded p-1.5 text-xs hover:opacity-90 disabled:opacity-40"
                 >
-                  {sending ? 'Extracting…' : 'Parse & dedupe'}
+                  {sending ? 'Extracting…' : uploadError ? 'Retry' : 'Parse & dedupe'}
                 </button>
+                {uploadError && (
+                  <div role="alert" className="mt-2.5 p-2.5 rounded-[var(--r-sm)] border border-[var(--border)] bg-[var(--verdict-conf-bg)] text-[11px] leading-relaxed text-[var(--text-primary)] space-y-0.5">
+                    <p className="font-semibold text-[var(--verdict-conf-txt)]">{withPeriod(uploadError.problem)}</p>
+                    <p><span className="text-[var(--text-secondary)]">Cause:</span> {withPeriod(uploadError.cause)}</p>
+                    <p><span className="text-[var(--text-secondary)]">Fix:</span> {withPeriod(uploadError.fix)}</p>
+                  </div>
+                )}
               </div>
             )}
           </div>

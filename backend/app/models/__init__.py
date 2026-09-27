@@ -1,18 +1,39 @@
 """ORM models.
 
-Full set per architecture.md "Core data model": Item, TaskContract, DecisionRecord, Entity,
-Agent, Edge, Verdict — filled in phase by phase (P1 Task Contract, P2-P8 add Run/
-Review/RequirementCoverage/Delivery/PR/registry profiles/ChangeProposal/AuditLog).
+P6 ingestion (plans/ingestion.md §4 / §11.1, feature-pipeline-contract.md §2, §6): documents,
+chunks, features, feature_versions, feature_relations, review_items, audit_events. Later phases
+(registry readiness, task factory, runs, reviews, …) add their tables here.
 
-P6 (ingestion, plans/ingestion.md) adds the first real models: Source, Chunk, Entity,
-DecisionRecord, IngestCandidate. Every model must be imported here (not just defined in its
-own file) so `from app.models import *` in migrations/env.py registers it on Base.metadata —
-otherwise Alembic autogenerate silently won't see it.
+Everything is re-exported so `from app.models import *` in migrations/env.py registers every
+table on `Base.metadata`.
 """
 
-from app.models.decision_record import DecisionRecord
-from app.models.entity import Entity
-from app.models.ingest_candidate import IngestCandidate
-from app.models.source import Chunk, Source
+from app.models._common import (
+    DOC_TYPES,
+    INGESTION_STATUSES,
+    LIFECYCLE_STATES,
+    RELATION_TYPES,
+    REVIEW_KINDS,
+    REVIEW_STATUSES,
+)
+from app.models.audit_event import AuditEvent
+from app.models.chunk import Chunk
+from app.models.document import Document
+from app.models.feature import Feature, FeatureRelation, FeatureVersion
+from app.models.review_item import ReviewItem
 
-__all__ = ["Source", "Chunk", "Entity", "DecisionRecord", "IngestCandidate"]
+__all__ = [
+    "DOC_TYPES",
+    "INGESTION_STATUSES",
+    "LIFECYCLE_STATES",
+    "RELATION_TYPES",
+    "REVIEW_KINDS",
+    "REVIEW_STATUSES",
+    "AuditEvent",
+    "Chunk",
+    "Document",
+    "Feature",
+    "FeatureRelation",
+    "FeatureVersion",
+    "ReviewItem",
+]

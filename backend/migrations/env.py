@@ -25,6 +25,17 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+
+def include_object(obj, name, type_, reflected, compare_to):
+    """Keep autogenerate away from tables we don't own.
+
+    LangGraph's Postgres checkpointer creates `checkpoint*` tables at runtime (setup()); they
+    are not in Base.metadata, so without this filter autogenerate would emit DROP TABLE for them.
+    """
+    if type_ == "table" and name is not None and name.startswith("checkpoint"):
+        return False
+    return True
+
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
@@ -47,6 +58,7 @@ def run_migrations_offline() -> None:
     context.configure(
         url=url,
         target_metadata=target_metadata,
+        include_object=include_object,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -56,7 +68,9 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection, target_metadata=target_metadata, include_object=include_object
+    )
 
     with context.begin_transaction():
         context.run_migrations()

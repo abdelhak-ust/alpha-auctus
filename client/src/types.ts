@@ -236,3 +236,23 @@ export interface DBState {
     isolateTenant: boolean;
   };
 }
+
+// ── Ingestion stage (plans/ingestion.md §11.1 — frozen contract) ───────────────
+// Served directly by backend/ (FastAPI) under /api/projects/{projectId}/…; the
+// matching Pydantic schemas live in backend/app/schemas/ingestion.py.
+export type IngestionStatus = 'pending' | 'parsed' | 'extracted' | 'consolidated' | 'done' | 'failed';
+export interface IngestDocument {
+  id: string; projectId: string; filename: string; status: IngestionStatus;
+  error?: string; duplicate?: boolean; featureCount: number; uploadedAt: string;
+}
+export type FeatureLifecycle = 'extracted' | 'consolidated' | 'conflicted' | 'classified' | 'assessing'
+  | 'awaiting_answers' | 'answered' | 'dev_ready' | 'overridden' | 'stale'
+  | 'in_breakdown' | 'needs_review' | 'broken_down';
+export interface SourceRef {
+  docId: string; docType: string; chunkId: string; section: string;
+  charStart: number; charEnd: number; snippet: string;
+}
+export interface RegistryFeature {
+  id: string; projectId: string; name: string; description: string; versionNo: number;
+  lifecycleState: FeatureLifecycle; sourceRefs: SourceRef[]; updatedAt: string;
+}

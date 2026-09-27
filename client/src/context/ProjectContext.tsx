@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { DBState, Item, Decision, VerdictType, WebSource, IngestItem, ProjectSummary, Priority, Status, Agent, AgentKind, NewProjectDraft, DraftSource, ClarificationTurn } from '../types.js';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { DBState, Item, Decision, VerdictType, WebSource, IngestItem, IngestDocument, ProjectSummary, Priority, Status, Agent, AgentKind, NewProjectDraft, DraftSource, ClarificationTurn } from '../types.js';
+import { BackendError, getReviewQueue, isIngestibleFile, resolveReviewItem, uploadIngestDocument, waitForIngestDocument } from '../lib/backend.js';
 
 type ViewName = 'board' | 'verdicts' | 'runs' | 'reviews' | 'delivery' | 'memory' | 'impact' | 'author' | 'sources' | 'deprecate' | 'settings' | 'projects';
 
@@ -31,7 +32,7 @@ interface ProjectContextType {
   setupDraft: NewProjectDraft;
   startNewProjectSetup: () => void;
   cancelSetup: () => void;
-  beginClarification: (draft: NewProjectDraft) => void;
+  beginClarification: (draft: NewProjectDraft, files?: File[]) => void;
   finishSetupAndGenerate: (answers: ClarificationTurn[]) => Promise<void>;
 
   // Workspace-wide AI agent catalog
@@ -47,8 +48,15 @@ interface ProjectContextType {
   askQuestion: (q: string, activeItemId?: number) => Promise<{ answer: string; citations: any[] }>;
   generateDocument: (type: 'brd' | 'spec' | 'tree', area: string, timeFrame: string) => Promise<{ document: string; unresolvedConflictsCount: number; conflicts: any[] }>;
   getDeprecations: () => Promise<any[]>;
-  uploadDocument: (name: string, content: string) => Promise<void>;
+  /**
+   * Sends a real file to backend/ (POST /projects/{id}/documents), then polls its
+   * status in the background and toasts the outcome. Throws BackendError if the
+   * upload itself fails, so the caller can show problem + cause + fix inline.
+   */
+  uploadDocument: (file: File) => Promise<IngestDocument | null>;
   resolveIngestItem: (id: string, action: 'approve' | 'dismiss') => Promise<void>;
+  /** True when an ingest-queue item came from backend/'s review queue (not the Node store). */
+  isBackendIngestItem: (id: string) => boolean;
   selectedCardId: number | null;
   setSelectedCardId: (id: number | null) => void;
   activeView: ViewName;
@@ -77,6 +85,16 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Guided New Project takeover state
   const [setupPhase, setSetupPhase] = useState<SetupPhase>('idle');
   const [setupDraft, setSetupDraft] = useState<NewProjectDraft>(emptyDraft());
+  // The File objects behind setupDraft.sources (DraftSource only carries metadata).
+  const setupFilesRef = useRef<File[]>([]);
+
+  // Ingestion review queue served by backend/ (plans/ingestion.md §11.1). Merged
+  // into state.ingestQueue below so the existing review UI renders both sources.
+  const [backendQueue, setBackendQueue] = useState<IngestItem[]>([]);
+  const backendQueueIds = useRef<Set<string>>(new Set());
+  const backendDownNotified = useRef(false);
+  const activeViewRef = useRef<ViewName>('board');
+  activeViewRef.current = activeView;
 
   const triggerToast = (msg: string, undoAction?: () => void) => {
     setToast({ message: msg, visible: true, undo: undoAction });
@@ -167,11 +185,13 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const cancelSetup = () => {
     setSetupPhase('idle');
     setSetupDraft(emptyDraft());
+    setupFilesRef.current = [];
     // If there's no project to fall back to, keep the user on the projects list.
     if (!activeProjectId) setActiveView('projects');
   };
 
-  const beginClarification = (draft: NewProjectDraft) => {
+  const beginClarification = (draft: NewProjectDraft, files: File[] = []) => {
+    setupFilesRef.current = files;
     setSetupDraft(draft);
     setSetupPhase('chat');
   };
@@ -182,39 +202,39 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     // 1. Create the project (setup flow owns navigation, so route:false).
     const proj = await createProject(draft.name.trim() || 'Untitled project', { route: false });
 
-    // 2. Assemble everything the AI can actually read into one ingestion blob.
-    //    Only text is real; video/image are represented by their filenames so
-    //    they still influence extraction (real transcription/OCR is deferred).
-    const textFiles = draft.sources.filter(s => s.content).map(s => `# ${s.name}\n${s.content}`);
-    const media = draft.sources.filter(s => !s.content).map(s => `- ${s.kind}: ${s.name}`);
+    // 2. Assemble the setup brief (description, GitHub URL, media names, chat
+    //    answers) as a Markdown document so it enters the same ingestion
+    //    pipeline as every other file. Video/image are listed by name only
+    //    (transcription/OCR is out of v1).
+    const media = draft.sources.filter(s => s.kind !== 'file').map(s => `- ${s.kind}: ${s.name}`);
     const qa = draft.answers.map(t => `Q: ${t.question}\nA: ${t.answer}`);
-    const assembled = [
-      `Project: ${draft.name}`,
+    const brief = [
+      `# ${draft.name}`,
       `\n## Description\n${draft.description}`,
       draft.github ? `\n## GitHub\n${draft.github} (analysis deferred)` : '',
-      media.length ? `\n## Media sources (pending ingest)\n${media.join('\n')}` : '',
-      textFiles.length ? `\n## Uploaded documents\n${textFiles.join('\n\n')}` : '',
+      media.length ? `\n## Media sources (not yet ingested)\n${media.join('\n')}` : '',
       qa.length ? `\n## Clarifications\n${qa.join('\n\n')}` : ''
     ].filter(Boolean).join('\n');
+    const briefFile = new File([brief], `${(draft.name.trim() || 'Untitled project').replace(/[\\/:*?"<>|]+/g, '-')} — setup brief.md`, { type: 'text/markdown' });
 
-    // 3. Push through the existing ingestion + verdict pipeline (mock or live).
-    try {
-      await fetch('/api/sources/upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: `${draft.name} — setup brief`, fileContent: assembled, projectId: proj.id })
-      });
-    } catch (e) {
-      console.error('Task generation upload failed', e);
-    }
-
-    // 4. Land in the verdict review queue (Sources view) to confirm generated tasks.
+    // 3. Land in the review queue (Sources view). Uploads continue in the
+    //    background (§4.10) — the user doesn't wait on them.
+    const docs = setupFilesRef.current.filter(f => isIngestibleFile(f.name));
+    setupFilesRef.current = [];
     setSetupPhase('idle');
     setSetupDraft(emptyDraft());
     await refreshState();
     await fetchProjects();
     setActiveView('sources');
-    triggerToast(`Generated tasks for "${proj.name}". Review them before they hit the board.`);
+    triggerToast(`Created "${proj.name}". Sources are ingesting — extracted features land in the review queue.`);
+
+    // 4. Upload the brief + the project documents to backend/ through the same
+    //    path as the Sources view; each one's outcome is toasted as it lands.
+    void (async () => {
+      for (const file of [briefFile, ...docs]) {
+        await ingestFile(proj.id, file);
+      }
+    })();
   };
 
   const deleteProject = async (id: string): Promise<void> => {
@@ -495,17 +515,105 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return data.suggestions;
   };
 
-  const uploadDocument = async (name: string, content: string) => {
-    await fetch('/api/sources/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileName: name, fileContent: content, projectId: activeProjectId })
-    });
-    await refreshState();
-    triggerToast(`Uploaded and ingested ${name}`);
+  // ── Ingestion (backend/, plans/ingestion.md §11.1) ───────────────────────
+  const showBackendError = (e: unknown, fallbackProblem: string) => {
+    if (e instanceof BackendError) {
+      triggerToast(e.toDisplay());
+    } else {
+      console.error(fallbackProblem, e);
+      triggerToast(`${fallbackProblem} (unexpected client error). Retry, or check the browser console.`);
+    }
+  };
+
+  const fetchBackendQueue = async (projectId: string): Promise<boolean> => {
+    try {
+      const items = await getReviewQueue(projectId);
+      backendQueueIds.current = new Set(items.map(i => String(i.id)));
+      setBackendQueue(items);
+      backendDownNotified.current = false;
+      return true;
+    } catch (e) {
+      // Don't claim "all processed" for a queue we couldn't read: say so once,
+      // where the queue is shown, instead of silently rendering it empty.
+      if (!backendDownNotified.current && activeViewRef.current === 'sources') {
+        backendDownNotified.current = true;
+        if (e instanceof BackendError) {
+          triggerToast(`Ingestion review queue unavailable: ${e.toDisplay()}`);
+        }
+      }
+      return false;
+    }
+  };
+
+  const causeOf = (d: IngestDocument) => (d.error || 'no cause reported by the backend').trim().replace(/[.\s]+$/, '');
+
+  /** Upload one file, then poll it to done/failed in the background and toast the outcome. */
+  const ingestFile = async (projectId: string, file: File, opts: { throwOnError?: boolean } = {}): Promise<IngestDocument | null> => {
+    if (!isIngestibleFile(file.name)) {
+      const err = new BackendError(`Can't ingest ${file.name}`, 'unsupported file type', 'Upload a PDF, DOCX, Markdown or TXT file', 415);
+      if (opts.throwOnError) throw err;
+      triggerToast(err.toDisplay());
+      return null;
+    }
+    let doc: IngestDocument;
+    try {
+      doc = await uploadIngestDocument(projectId, file);
+    } catch (e) {
+      if (opts.throwOnError) throw e;
+      showBackendError(e, `Couldn't upload ${file.name}`);
+      return null;
+    }
+
+    // Branch on status first (plans/ingestion.md §11.3 retry semantics): a re-upload
+    // of a failed doc is reset to pending (202) and must be followed, not called a duplicate.
+    if (doc.status === 'failed') {
+      triggerToast(`Couldn't ingest ${doc.filename} (${causeOf(doc)}). Fix the cause and upload it again.`);
+      return doc;
+    }
+    if (doc.duplicate && (doc.status === 'done' || doc.status === 'consolidated')) {
+      triggerToast(`${doc.filename} was already ingested — nothing new to extract.`);
+      return doc;
+    }
+    triggerToast(doc.duplicate
+      ? `${doc.filename} is already being ingested — following its progress…`
+      : `Uploaded ${doc.filename} — ingesting…`);
+
+    // Background: follow the document to a terminal status.
+    void waitForIngestDocument(projectId, doc.id)
+      .then(final => {
+        if (final.status === 'done') {
+          triggerToast(`Ingested ${final.filename} — ${final.featureCount} feature${final.featureCount === 1 ? '' : 's'} extracted.`);
+        } else {
+          triggerToast(`Couldn't ingest ${final.filename} (${causeOf(final)}). Fix the cause and upload it again.`);
+        }
+        fetchBackendQueue(projectId);
+      })
+      .catch(e => showBackendError(e, `Lost track of ${doc.filename}`));
+
+    return doc;
+  };
+
+  const uploadDocument = async (file: File): Promise<IngestDocument | null> => {
+    if (!activeProjectId) return null;
+    return ingestFile(activeProjectId, file, { throwOnError: true });
   };
 
   const resolveIngestItem = async (id: string, action: 'approve' | 'dismiss') => {
+    if (activeProjectId && backendQueueIds.current.has(id)) {
+      try {
+        await resolveReviewItem(activeProjectId, id, action);
+      } catch (e) {
+        showBackendError(e, `Couldn't ${action} the review item`);
+        return;
+      }
+      backendQueueIds.current.delete(id);
+      setBackendQueue(prev => prev.filter(i => String(i.id) !== id));
+      await fetchBackendQueue(activeProjectId);
+      triggerToast(action === 'approve' ? 'Approved ingestion item.' : 'Dismissed ingestion item.');
+      return;
+    }
+
+    // Legacy items still produced by client/server.ts.
     await fetch('/api/ingest/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -515,11 +623,37 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
     triggerToast(action === 'approve' ? `Approved and moved to Board inbox.` : `Dismissed ingestion item.`);
   };
 
+  // Poll the backend review queue alongside the Node state; back off while the
+  // backend is unreachable so a stopped backend doesn't flood the console.
+  useEffect(() => {
+    backendQueueIds.current = new Set();
+    setBackendQueue([]);
+    backendDownNotified.current = false;
+    if (!activeProjectId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      const ok = await fetchBackendQueue(activeProjectId);
+      if (!cancelled) timer = setTimeout(tick, ok ? 4000 : 30000);
+    };
+    tick();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [activeProjectId]);
+
+  // Retry immediately (and surface the error once) when the user opens Sources.
+  useEffect(() => {
+    if (activeView === 'sources' && activeProjectId) fetchBackendQueue(activeProjectId);
+  }, [activeView]);
+
+  const mergedState: DBState | null = state
+    ? { ...state, ingestQueue: [...state.ingestQueue, ...backendQueue] }
+    : null;
+
   const activeProject = projects.find(p => p.id === activeProjectId) || null;
 
   return (
     <ProjectContext.Provider value={{
-      state,
+      state: mergedState,
       loading,
       theme,
       setTheme,
@@ -552,6 +686,7 @@ export const ProjectProvider: React.FC<{ children: React.ReactNode }> = ({ child
       getDeprecations,
       uploadDocument,
       resolveIngestItem,
+      isBackendIngestItem: (id: string) => backendQueueIds.current.has(id),
       selectedCardId,
       setSelectedCardId,
       activeView,

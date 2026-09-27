@@ -30,6 +30,8 @@ __pycache__/
 .ruff_cache/
 .venv/
 backend/.data/
+# Local Qdrant storage + uploaded document blobs (plans/ingestion.md §11.3)
+backend/data/
 
 # SQLite database for the board data (client/db/) — a local artifact; the schema lives in
 # client/db/migrations.ts and a fresh clone seeds itself from client/data/database.json.

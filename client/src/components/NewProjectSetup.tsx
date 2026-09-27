@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useProject } from '../context/ProjectContext.js';
 import { DraftSource, DraftSourceKind, NewProjectDraft } from '../types.js';
+import { INGEST_ACCEPT } from '../lib/backend.js';
 
 // Which uploaded files we can actually read client-side. Everything else is
 // captured as metadata and ingested for real in a later backend pass.
@@ -27,10 +28,14 @@ interface ZoneConfig {
 }
 
 const ZONES: ZoneConfig[] = [
-  { kind: 'file', label: 'Files', hint: 'docs, PDFs, specs, CSVs', accept: '.pdf,.docx,.md,.txt,.csv', icon: FileText },
+  // Files go to the backend ingestion pipeline — v1 types only (plans/ingestion.md §9).
+  { kind: 'file', label: 'Files', hint: 'docs, PDFs, specs', accept: INGEST_ACCEPT, icon: FileText },
   { kind: 'video', label: 'Videos', hint: 'meeting & client calls', accept: '.mp4,.mov,.m4a,.wav', icon: Video },
   { kind: 'image', label: 'Images', hint: 'whiteboards, diagrams', accept: '.png,.jpg,.jpeg,.svg', icon: ImageIcon }
 ];
+
+const acceptsFile = (zone: ZoneConfig, name: string) =>
+  zone.accept.split(',').includes(`.${(name.split('.').pop() || '').toLowerCase()}`);
 
 const GITHUB_RE = /^(https?:\/\/)?(www\.)?github\.com\/[\w.-]+\/[\w.-]+\/?$/i;
 
@@ -39,7 +44,8 @@ const UploadRow: React.FC<{
   sources: DraftSource[];
   onAdd: (files: FileList) => void;
   onRemove: (name: string) => void;
-}> = ({ zone, sources, onAdd, onRemove }) => {
+  error?: string;
+}> = ({ zone, sources, onAdd, onRemove, error }) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const Icon = zone.icon;
@@ -78,6 +84,10 @@ const UploadRow: React.FC<{
         />
       </div>
 
+      {error && (
+        <p id={`np-zone-${zone.kind}-error`} role="alert" className="mt-2 text-[11px] text-[var(--verdict-conf-txt)]">{error}</p>
+      )}
+
       {mine.length > 0 && (
         <div className="mt-2.5 flex flex-wrap gap-1.5">
           {mine.map(s => (
@@ -97,6 +107,10 @@ const UploadRow: React.FC<{
 
 export const NewProjectSetup: React.FC = () => {
   const { projects, cancelSetup, beginClarification } = useProject();
+  // Inline "unsupported type" message per zone (§4.10: each zone rejects others' types inline).
+  const [zoneErrors, setZoneErrors] = useState<Partial<Record<DraftSourceKind, string>>>({});
+  // Real File objects for the 'file' zone, keyed by name — uploaded to backend/ on generate.
+  const [fileBlobs, setFileBlobs] = useState<Record<string, File>>({});
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [github, setGithub] = useState('');
@@ -107,8 +121,16 @@ export const NewProjectSetup: React.FC = () => {
   const githubValid = github.trim() === '' || GITHUB_RE.test(github.trim());
 
   const addFiles = async (kind: DraftSourceKind, files: FileList) => {
+    const zone = ZONES.find(z => z.kind === kind)!;
     const incoming: DraftSource[] = [];
+    const blobs: Record<string, File> = {};
+    const refused: string[] = [];
     for (const file of Array.from(files)) {
+      if (!acceptsFile(zone, file.name)) {
+        refused.push(file.name);
+        continue;
+      }
+      if (kind === 'file') blobs[file.name] = file;
       let content: string | undefined;
       if (kind === 'file' && isTextFile(file.name)) {
         try { content = await file.text(); } catch (e) { /* keep as metadata */ }
@@ -119,9 +141,19 @@ export const NewProjectSetup: React.FC = () => {
       const names = new Set(prev.map(s => s.name));
       return [...prev, ...incoming.filter(s => !names.has(s.name))];
     });
+    setFileBlobs(prev => ({ ...blobs, ...prev }));
+    setZoneErrors(prev => ({
+      ...prev,
+      [kind]: refused.length
+        ? `Can't add ${refused.join(', ')} — unsupported type for ${zone.label}. Accepted: ${zone.accept.split(',').join(', ')}.`
+        : undefined
+    }));
   };
 
-  const removeSource = (name: string) => setSources(prev => prev.filter(s => s.name !== name));
+  const removeSource = (name: string) => {
+    setSources(prev => prev.filter(s => s.name !== name));
+    setFileBlobs(prev => { const next = { ...prev }; delete next[name]; return next; });
+  };
 
   const handleContinue = () => {
     if (!canContinue || !githubValid) return;
@@ -132,7 +164,8 @@ export const NewProjectSetup: React.FC = () => {
       sources,
       answers: []
     };
-    beginClarification(draft);
+    const files = sources.filter(s => s.kind === 'file' && fileBlobs[s.name]).map(s => fileBlobs[s.name]);
+    beginClarification(draft, files);
   };
 
   return (
@@ -204,6 +237,7 @@ export const NewProjectSetup: React.FC = () => {
               sources={sources}
               onAdd={(files) => addFiles(zone.kind, files)}
               onRemove={removeSource}
+              error={zoneErrors[zone.kind]}
             />
           ))}
         </div>

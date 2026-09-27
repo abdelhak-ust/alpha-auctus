@@ -1,142 +1,80 @@
-"""LLM extraction: one chunk -> candidate Items + candidate DecisionRecords.
+"""Sequential extraction with rolling state (plans/ingestion.md §5 step 4 / §6 step 4).
 
-Uses a forced tool-call (not free-text JSON) so the shape is actually reliable — Claude's tool
-schema is a much stronger guarantee than "please output JSON" prompting.
+No chunk is extracted in isolation (§2): each call gets the compact rolling summary of features
+found so far in this document and, in incremental mode, the top-k registry candidates retrieved
+for that chunk. This is the recall pass — it only *finds* fragments; merging is consolidate.py.
 
-**Hallucination guard**: every candidate must carry a `snippet` that is a literal substring of
-its source chunk. Anything that doesn't literally quote the chunk is dropped, not corrected or
-kept — a concrete enforcement of "cite or stay silent" (architecture.md; plans/ingestion.md
-step 4). This is the single most important property of this module: a silent miss (dropping a
-real requirement) is recoverable next ingest pass; a fabricated citation is not something the
-rest of the product can detect on its own.
+Each fragment's quote is located in the chunk (cite.py). Fragments whose quote can't be found
+are returned separately as `unlocated` — they become sweep flags, never features.
 """
 
-from app.ai import get_client
-from app.config import get_settings
-from app.schemas.ingestion import ExtractedDecision, ExtractedItem, ExtractionResult
+from __future__ import annotations
 
-_TOOL_NAME = "extract_candidates"
+from app.ingest.chunk import ChunkSpec
+from app.ingest.cite import make_source_ref, names_match
+from app.ingest.llm import call_llm
+from app.ingest.prompts import extraction_prompt
+from app.schemas.ingestion import ExtractionResult
 
-_TOOL_SCHEMA = {
-    "name": _TOOL_NAME,
-    "description": (
-        "Record every distinct requirement/task/feedback item and every distinct "
-        "architectural decision statement found in this chunk of text."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "items": {
-                "type": "array",
-                "description": "Backlog-worthy requirements, tasks, or feedback.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "title": {"type": "string", "description": "Short descriptive title."},
-                        "description": {"type": "string", "description": "1-2 sentences of detail"},
-                        "entity_tags": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Feature/area names touched, e.g. 'auth', 'billing'.",
-                        },
-                        "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
-                        "snippet": {
-                            "type": "string",
-                            "description": "EXACT verbatim text this was extracted from — "
-                            "copy-paste, do not paraphrase.",
-                        },
-                    },
-                    "required": ["title", "snippet"],
-                },
-            },
-            "decisions": {
-                "type": "array",
-                "description": "Atomic, normalized architectural/product decision statements.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "statement": {
-                            "type": "string",
-                            "description": "Normalized 'we will X' / 'we will not X' — one claim.",
-                        },
-                        "polarity": {"type": "string", "enum": ["affirm", "negate"]},
-                        "affected_entities": {"type": "array", "items": {"type": "string"}},
-                        "snippet": {
-                            "type": "string",
-                            "description": "EXACT verbatim text this was extracted from — "
-                            "copy-paste, do not paraphrase.",
-                        },
-                    },
-                    "required": ["statement", "snippet"],
-                },
-            },
-        },
-        "required": ["items", "decisions"],
-    },
-}
-
-_SYSTEM_PROMPT = (
-    "You extract structured backlog items and decision statements from raw project text "
-    "(meeting notes, briefs, tickets, transcripts). Only extract what is actually present — "
-    "if the chunk has no clear requirements or decisions, call the tool with empty arrays "
-    "rather than inventing something. Every `snippet` must be copied verbatim from the input; "
-    "never paraphrase or summarize into the snippet field — it is used as a citation and will "
-    "be rejected if it doesn't literally appear in the source."
-)
+SUMMARY_LINE_CHARS = 140
 
 
-async def extract_from_chunk(chunk_text: str) -> ExtractionResult:
-    """Run extraction on a single chunk and filter out any candidate whose snippet isn't a
-    literal substring of that chunk (the hallucination guard)."""
-    if not chunk_text.strip():
-        return ExtractionResult()
-
-    settings = get_settings()
-    client = get_client()
-    response = await client.messages.create(
-        model=settings.vertex_model,
-        max_tokens=4096,
-        system=_SYSTEM_PROMPT,
-        tools=[_TOOL_SCHEMA],
-        tool_choice={"type": "tool", "name": _TOOL_NAME},
-        messages=[{"role": "user", "content": chunk_text}],
+async def extract_chunk(
+    chunk: ChunkSpec,
+    *,
+    document_id: str,
+    doc_type: str,
+    rolling_summary: list[dict],
+    registry_candidates: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Run one extraction call. Returns (located fragments, unlocated fragments) as dicts."""
+    prompt = extraction_prompt(
+        chunk_text=chunk.text,
+        section=" > ".join(chunk.section_path),
+        rolling_summary=rolling_summary,
+        registry_candidates=registry_candidates,
     )
+    result = await call_llm(prompt, ExtractionResult)
 
-    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
-    if tool_use is None:
-        return ExtractionResult()
-
-    raw = tool_use.input or {}
-
-    items: list[ExtractedItem] = []
-    for raw_item in raw.get("items", []):
-        snippet = (raw_item.get("snippet") or "").strip()
-        title = (raw_item.get("title") or "").strip()
-        if not title or not snippet or snippet not in chunk_text:
-            continue  # hallucination guard: drop, don't keep or "fix"
-        items.append(
-            ExtractedItem(
-                title=title,
-                description=raw_item.get("description", ""),
-                entity_tags=raw_item.get("entity_tags", []),
-                priority=raw_item.get("priority", "P2"),
-                snippet=snippet,
-            )
+    located: list[dict] = []
+    unlocated: list[dict] = []
+    for fragment in result.fragments:
+        data = fragment.model_dump()
+        data["chunk_ordinal"] = chunk.ordinal
+        data["chunk_id"] = chunk.chunk_id
+        ref = make_source_ref(
+            chunk, fragment.snippet, document_id=document_id, doc_type=doc_type,
+            confidence=fragment.confidence,
         )
-
-    decisions: list[ExtractedDecision] = []
-    for raw_decision in raw.get("decisions", []):
-        snippet = (raw_decision.get("snippet") or "").strip()
-        statement = (raw_decision.get("statement") or "").strip()
-        if not statement or not snippet or snippet not in chunk_text:
+        if ref is None:
+            unlocated.append(data)
             continue
-        decisions.append(
-            ExtractedDecision(
-                statement=statement,
-                polarity=raw_decision.get("polarity", "affirm"),
-                affected_entities=raw_decision.get("affected_entities", []),
-                snippet=snippet,
-            )
-        )
+        # The model's offsets are replaced by where the quote really is (absolute offsets).
+        data["char_start"], data["char_end"] = ref["char_start"], ref["char_end"]
+        data["snippet"] = ref["snippet"]
+        data["section"] = ref["section"]
+        data["source_ref"] = ref
+        located.append(data)
+    return located, unlocated
 
-    return ExtractionResult(items=items, decisions=decisions)
+
+def _one_line(description: str) -> str:
+    line = description.strip().split("\n", 1)[0]
+    first_sentence = line.split(". ", 1)[0]
+    return first_sentence[:SUMMARY_LINE_CHARS]
+
+
+def update_rolling_summary(rolling: list[dict], fragments: list[dict]) -> list[dict]:
+    """Compact rolling state: one {name, summary} line per feature found so far."""
+    out = [dict(r) for r in rolling]
+    for fragment in fragments:
+        target = fragment.get("references_feature") or fragment["feature_name"]
+        existing = next(
+            (r for r in out if names_match(r["name"], target)
+             or names_match(r["name"], fragment["feature_name"])),
+            None,
+        )
+        if existing is None:
+            out.append({"name": fragment["feature_name"],
+                        "summary": _one_line(fragment["description"])})
+    return out

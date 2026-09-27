@@ -4,7 +4,10 @@
     {
       "name": "nexus-client",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd client && npm run dev"],
+      "runtimeArgs": [
+        "-c",
+        "cd client && npm run dev"
+      ],
       "port": 3000
     },
     {
@@ -20,6 +23,15 @@
       ],
       "port": 8000,
       "url": "http://localhost:8000"
+    },
+    {
+      "name": "nexus-worker",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd backend && poetry run arq app.queue.worker.WorkerSettings"
+      ],
+      "port": 8001
     }
   ]
 }

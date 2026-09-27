@@ -8,6 +8,46 @@ phase is implemented and passes `nexus-verify` — newest entry on top.
 
 ---
 
+## 2026-09-26 — Ingestion pipeline removed; SQLite board store kept
+
+**What:** at the owner's request the whole ingestion pipeline was taken out of `ui_v2`, and the SQLite board store (`client/db/`,
+2026-09-25) was kept. Removed: the committed P6 pipeline (`backend/app/ingest/`, the ingestion routes/schemas/models, the Postgres
+migration, their tests, the Vertex-adapter changes, the `multer`/proxy code in `client/server.ts`), and — never committed — the GCP
+document-parsing work (`app/parsing`, the Cloud Function and its provision/deploy scripts, Gemini extraction) and the guided New
+Project flow (background jobs, document understanding, grounded clarification chat, the file-status UI). **Postgres:** the ingestion
+tables (`sources`, `chunks`, `decision_records`, `ingest_candidates`, `entities`) were dropped with `alembic downgrade base`, which
+also deleted their rows (2 sources, 3 chunks, 10 candidates, 10 decisions from one ingested PDF); the `vector` extension and the
+Postgres foundation (connection, health check, Alembic setup) stay. **The app** is back to the earlier mock ingestion — one Gemini
+call, or a canned item without an API key, per uploaded text — with `client/server.ts` writing the review queue into SQLite through the
+repository (`addIngestItems` / `approveIngestItem` / `deleteIngestItem`); the frontend is exactly its committed `ui_v2` state.
+
+**Kept safe:** everything as it stood before the removal is one commit on the local branch **`backup/ingestion-2026-09-26`**
+(78 files, nothing pushed) — restore with `git merge backup/ingestion-2026-09-26`, or `git checkout backup/ingestion-2026-09-26 -- <path>`
+for individual files (its migrations would need `alembic upgrade head` to recreate the tables; their data is not recoverable).
+The three ingestion feature plans are on that branch or, for `plans/ingestion.md`, kept here marked `abandoned`. The earlier log entries
+above stay as history — they describe work that no longer exists on `ui_v2`.
+
+**Files:** deleted — `backend/app/{ingest/{chunk,extract,parse,pipeline,verdict}.py, api/routes/ingestion.py,
+schemas/ingestion.py, models/{source,entity,decision_record,ingest_candidate}.py}`, `backend/migrations/versions/3e6a80f4bb8f_*`,
+`backend/tests/{conftest,test_ingest_*}.py`; reverted — `backend/app/{ai/vertex.py,config.py,main.py,models/__init__.py}`,
+`backend/{pyproject.toml,poetry.lock}`, `backend/tests/test_ai_adapter.py`, `client/package{,-lock}.json` (no `multer`);
+rewritten — `client/server.ts` (the ingestion section only); `plans/ingestion.md` (status `abandoned`, removal note).
+
+**Verified:** backend `pytest` 4/4 (the foundation tests), `ruff` clean, boots with only `/`, `/api/health`, `/api/health/ready`
+(database connected, pgvector 0.8.6), Alembic at base; client `tsc --noEmit` clean, `npm test` 37/37 (SQLite repository). Through a real
+Node process on a throwaway database with no Gemini key: upload → review queue → approve creates the board card and removes the queue
+entry, three rapid uploads don't collide, dismiss works, unknown item/project → 404, the removed endpoints answer 404. Your real
+`client/data/nexus.db` and the legacy `database.json` were not touched.
+
+**Open / not done, deliberately:** the GCP resources created for the parsing work still exist in the shared project — bucket
+`nexus-ingest-<project-number>`, service account `nexus-parse-fn`, Document AI processor `nexus-layout-parser` (nothing deployed; not
+deleted because that is a separate, outward-facing action). `pypdf` is still listed in `backend/pyproject.toml` (a foundations-era
+dependency, unused). `backend/.env` keeps a now-unused `VERTEX_MODEL` line (ignored by the settings).
+
+**Commit:** not committed — the removal is uncommitted changes on `ui_v2`; the backup branch holds the old work.
+
+---
+
 ## 2026-09-25 — Real database (SQLite) for the board data
 
 **What:** `client/server.ts`'s JSON-file store (`data/database.json`: whole file loaded into memory,

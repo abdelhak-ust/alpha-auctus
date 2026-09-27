@@ -1,20 +1,31 @@
-"""AI provider adapter — Vertex AI only, per the plan's §0.3/§5 decisions.
+"""AI provider adapter — Gemini via Vertex AI only (plans/feature-pipeline-contract.md §1).
 
-Wraps `AnthropicVertex` (generation: extraction, classification, authoring, validation) and
-Vertex AI embeddings behind one import, so callers in engine/, contracts/, validate/, ingest/
-never touch the SDKs directly. Auth is Application Default Credentials — no API key, no
-BYO-key posture (architecture.md D3's original raw-Anthropic-API BYO-key seam is superseded
-for this build; see the plan's resolved decision #6).
+Wraps the `google-genai` SDK (Vertex mode, Application Default Credentials) behind two
+functions, so callers in ingest/, registry/, contracts/, … never touch the SDK directly:
 
-Usage:
-    from app.ai import get_client, embed_texts
+    from app import ai
 
-    client = get_client()
-    resp = client.messages.create(model="claude-...", ...)
+    result = await ai.generate_json(prompt, MySchema, system="...")   # -> MySchema
+    vectors = await ai.embed_texts(texts, task_type="RETRIEVAL_DOCUMENT")
 
-    vectors = embed_texts(["some chunk text", "another chunk"])
+Call through the module (`ai.generate_json`) so tests can monkeypatch `app.ai.*` — tests mock
+these two functions, never the SDK (plans/ingestion.md §11.1).
 """
 
-from app.ai.vertex import VertexNotConfigured, embed_texts, get_client
+from app.ai.vertex import (
+    AIResponseInvalid,
+    EmbeddingTaskType,
+    VertexNotConfigured,
+    embed_texts,
+    generate_json,
+    get_client,
+)
 
-__all__ = ["get_client", "embed_texts", "VertexNotConfigured"]
+__all__ = [
+    "AIResponseInvalid",
+    "EmbeddingTaskType",
+    "VertexNotConfigured",
+    "embed_texts",
+    "generate_json",
+    "get_client",
+]

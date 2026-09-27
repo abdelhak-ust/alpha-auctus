@@ -12,6 +12,10 @@ completion with per-requirement evidence — not just "the tests pass."
 3. The active build plan at `.claude/plans/we-want-nexus-to-sorted-shell.md` — feature
    catalog, user stories, phased build order, resolved decisions, and what's actually been
    built vs. still a mock.
+4. **The feature pipeline** (new standard, 2026-09-26 — wins over older stack choices in 1–3):
+   `plans/feature-pipeline-contract.md`, then the three stages it binds —
+   `plans/ingestion.md` (documents → Feature Registry) → `plans/FEATURE_REGISTRY.md`
+   (clarification chat → dev-ready) → `plans/Devevloper_tasks_factory.md` (task generation).
 
 Don't improvise product behavior — if a screen, flow, or copy isn't covered by (1) or (2),
 that's a gap to flag, not a blank to fill from taste.
@@ -33,9 +37,11 @@ that's a gap to flag, not a blank to fill from taste.
   queue, agents, AI settings) lives in a **SQLite** database via `client/db/`; the AI paths there
   are still mocked/Gemini. Being replaced by `backend/` phase by phase.
 - `backend/` — Python 3.13 + FastAPI, built phase by phase per the plan. Poetry-managed.
-  AI (generation + embeddings) always goes through **Vertex AI**; local dev otherwise stays
-  local (Postgres+pgvector, filesystem blobs, arq) and deployed environments go GCP-native
-  (Cloud SQL, Cloud Storage, Cloud Tasks, Secret Manager, Cloud Run) — see §3 of the plan.
+  AI (generation + embeddings) always goes through **Gemini via Vertex AI**; orchestration of
+  the feature pipeline is **LangGraph**; vectors live in **Qdrant**, canonical records in
+  **Postgres**. Local dev otherwise stays local (Postgres, Qdrant, filesystem blobs, arq) and
+  deployed environments go GCP-native (Cloud SQL, Cloud Storage, Cloud Tasks, Secret Manager,
+  Cloud Run) — see §3 of the plan and `plans/feature-pipeline-contract.md` §1.
 - `ui_ux_design.md`, `architecture.md` — the two source specs (read first, above).
 - `.claude/plans/we-want-nexus-to-sorted-shell.md` — the living **master** build plan (the
   whole-platform roadmap — doesn't move).

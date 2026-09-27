@@ -1,0 +1,49 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 243 >>
+stream
+BT /F1 20 Tf 72 740 Td (Acme Portal Spec) Tj ET
+BT /F1 14 Tf 72 704 Td (1. Authentication) Tj ET
+BT /F1 11 Tf 72 674 Td (Users sign in with SSO through Okta.) Tj ET
+BT /F1 11 Tf 72 647 Td (Sessions expire after 30 minutes of inactivity.) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 186 >>
+stream
+BT /F1 14 Tf 72 740 Td (2. Administration) Tj ET
+BT /F1 11 Tf 72 710 Td (Admins can export the audit log as CSV.) Tj ET
+BT /F1 11 Tf 72 683 Td (The export covers the last 90 days.) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000253 00000 n 
+0000000547 00000 n 
+0000000673 00000 n 
+0000000910 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1007
+%%EOF

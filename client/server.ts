@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { DBState, VerdictDetail, IngestItem, WebSource } from './src/types.js';
@@ -13,15 +12,6 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
-
-// The real ingestion pipeline (parse -> chunk -> extract -> embed -> provenance) lives in the
-// Python backend (backend/app/ingest/) — see plans/ingestion.md "Placement". This process
-// forwards its ingestion-specific handlers there and merges the result into its own store,
-// which is still what /api/state and the rest of the app read from; every other /api/* route
-// (items, decisions, ask, author, ...) is untouched, per the route-by-route cutover pattern
-// plans/ingestion.md establishes for later phases too.
-const BACKEND_URL = process.env.NEXUS_BACKEND_URL || 'http://localhost:8000';
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 // The board data (projects, items, decisions, sources, ingest queue, agents, AI settings) lives
 // in SQLite — see client/db/ and plans/node-sqlite-store.md. On first run it is populated from the
@@ -640,87 +630,100 @@ app.post('/api/deprecate', (req, res) => {
   res.json({ suggestions: dps });
 });
 
-// Sources review pipeline
-// Real pipeline (parse/chunk/extract/embed/provenance) — proxied to the Python backend,
-// which returns the extracted candidates already IngestItem-shaped. This process still owns the
-// review queue and the board (nothing has migrated items/decisions/projects to the backend yet),
-// so it stores the result in its own database — a merge, not a dumb relay, because /api/state
-// reads from here. See plans/ingestion.md "Placement".
-async function forwardToIngestionBackend(path: string, init: RequestInit) {
-  const response = await fetch(`${BACKEND_URL}${path}`, init);
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = (body && (body as any).detail) || response.statusText;
-    throw new Error(`Ingestion backend ${path} returned ${response.status}: ${detail}`);
-  }
-  return body;
-}
-
-function ingestionUnavailableResponse(res: express.Response, error: unknown) {
-  console.error('Ingestion backend unreachable:', error);
-  return res.status(502).json({
-    error: "Couldn't reach the ingestion backend. Is `backend/` running (see backend/README.md)?",
-    detail: error instanceof Error ? error.message : String(error)
-  });
-}
-
+// Sources review pipeline (a mock: one Gemini call — or a canned item when there is no API key —
+// per uploaded text; the review queue lives in SQLite via `repo`)
 app.post('/api/sources/upload', async (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
   const { fileName, fileContent } = req.body;
+  const client = getGeminiClient();
 
-  try {
-    const result = await forwardToIngestionBackend('/api/sources/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileName, fileContent, projectId: proj.id })
-    });
-    const items = (result.items || []) as IngestItem[];
-    repo.addIngestItems(proj.id, items);
-    res.json({ success: true, count: items.length, items });
-  } catch (error) {
-    ingestionUnavailableResponse(res, error);
+  const buildMockExtracted = (): IngestItem => {
+    const title = "Add custom database-backed SSO login store";
+    const description = "Setup server encryption algorithms to save and manage client enterprise dashboard credentials directly inside our server databases.";
+    return {
+      id: "ingest-" + Date.now(),
+      title,
+      description,
+      area: "auth",
+      priority: "P1",
+      sourceId: "src-upload",
+      sourceSnippet: `We should configure custom tables to write encryption credentials direct ... ${fileName || "Meeting Transcript"}`,
+      verdict: mockAnalysis(proj, title, description)
+    };
+  };
+
+  if (!client) {
+    const mockExtracted = [buildMockExtracted()];
+    repo.addIngestItems(proj.id, mockExtracted);
+    return res.json({ success: true, count: mockExtracted.length, items: mockExtracted });
   }
-});
-
-// New this pass (plans/ingestion.md § API surface) — PDF/image uploads. No UI triggers this
-// yet (NewProjectSetup's Files/Images zones still only read text client-side), but the path
-// is real and reachable now that the backend can actually parse PDFs/images.
-app.post('/api/sources/upload-file', upload.single('file'), async (req, res) => {
-  const proj = resolveProject(req);
-  if (!proj) return res.status(404).json({ error: "Project not found" });
-  if (!req.file) return res.status(400).json({ error: "No file uploaded (expected field 'file')" });
 
   try {
-    const form = new FormData();
-    form.append('file', new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname);
+    const prompt = `
+Parse the following text from an uploaded planning document/meeting transcript. Identify one logical feature proposal, backlog item, or requirement.
+Output a JSON array representing the extracted backlog items.
 
-    const result = await forwardToIngestionBackend(
-      `/api/sources/upload-file?project_id=${encodeURIComponent(proj.id)}`,
-      { method: 'POST', body: form }
-    );
-    const items = (result.items || []) as IngestItem[];
-    repo.addIngestItems(proj.id, items);
-    res.json({ success: true, count: items.length, items });
-  } catch (error) {
-    ingestionUnavailableResponse(res, error);
-  }
-});
+Source File Content:
+"${fileContent || "Develop custom internal password hashes and bypass external portals directly."}"
 
-app.get('/api/sources/:id/status', async (req, res) => {
-  try {
-    const result = await forwardToIngestionBackend(`/api/sources/${encodeURIComponent(req.params.id)}/status`, {
-      method: 'GET'
+Generate a single JSON object in the array with properties:
+{
+  "title": "<short descriptive title>",
+  "description": "<detailed requirement description>",
+  "area": "auth" | "reporting" | "general",
+  "priority": "P1" | "P2" | "P3"
+}
+`;
+
+    const response = await client.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json'
+      }
     });
-    res.json(result);
+
+    const parsed = JSON.parse(response.text || '[]');
+    const results: IngestItem[] = [];
+
+    const itemsToProcess = Array.isArray(parsed) ? parsed : [parsed];
+
+    for (const rawItem of itemsToProcess) {
+      if (rawItem && rawItem.title) {
+        // Run alignment verdict against local project state
+        const analysis = await performVerdictAnalysis(proj, rawItem.title, rawItem.description || '');
+        results.push({
+          // The (project, id) pair is a primary key in SQLite, so ids in one batch must not collide.
+          id: `ingest-${Date.now()}-${results.length}`,
+          title: rawItem.title,
+          description: rawItem.description || '',
+          area: rawItem.area || 'general',
+          priority: rawItem.priority || 'P2',
+          sourceId: 'src-upload',
+          sourceSnippet: fileContent ? fileContent.slice(0, 150) + "..." : "Uploaded document content excerpt",
+          verdict: analysis
+        });
+      }
+    }
+
+    if (results.length === 0) {
+      results.push(buildMockExtracted());
+    }
+
+    repo.addIngestItems(proj.id, results);
+    res.json({ success: true, count: results.length, items: results });
   } catch (error) {
-    ingestionUnavailableResponse(res, error);
+    console.error("Failed to parse document via AI, pushing mockup item:", error);
+    const mockExtracted = [buildMockExtracted()];
+    repo.addIngestItems(proj.id, mockExtracted);
+    res.json({ success: true, count: mockExtracted.length, items: mockExtracted });
   }
 });
 
 // Resolve Ingest Queue elements (Add to Board or skip)
-app.post('/api/ingest/resolve', async (req, res) => {
+app.post('/api/ingest/resolve', (req, res) => {
   const proj = resolveProject(req);
   if (!proj) return res.status(404).json({ error: "Project not found" });
 
@@ -731,24 +734,19 @@ app.post('/api/ingest/resolve', async (req, res) => {
     return res.status(404).json({ error: "Item not found in review queue" });
   }
 
-  try {
-    const result = await forwardToIngestionBackend('/api/ingest/resolve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, action, projectId: proj.id })
+  if (action === 'approve') {
+    // Migrate to the board: the card is created and the queue entry removed in one transaction.
+    repo.approveIngestItem(proj.id, queued, {
+      title: queued.title,
+      description: queued.description,
+      area: queued.area,
+      priority: queued.priority,
+      sourceSnippet: queued.sourceSnippet
     });
-
-    if (action === 'approve' && result.item) {
-      // Migrate to the board: the card is created and the queue entry removed in one transaction.
-      repo.approveIngestItem(proj.id, queued, result.item);
-    } else {
-      repo.deleteIngestItem(proj.id, id);
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    ingestionUnavailableResponse(res, error);
+  } else {
+    repo.deleteIngestItem(proj.id, id);
   }
+  res.json({ success: true });
 });
 
 // Start server containing Vite configuration OR hosting assets directly

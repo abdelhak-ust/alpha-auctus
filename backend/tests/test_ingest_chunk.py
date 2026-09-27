@@ -1,69 +1,69 @@
-"""plans/ingestion.md Verification: "chunker produces correct char offsets on a fixture doc"."""
+"""chunk.py — section-boundary chunks, overlap, exact offsets, deterministic ids (§5 step 3)."""
 
-from app.ingest.chunk import chunk_text
+import uuid
+
+from app.ingest.chunk import ChunkSpec, chunk_document, chunk_id_for
+from app.ingest.parse import Block, build_parsed
+
+DOC = str(uuid.uuid4())
 
 
-def test_empty_text_produces_no_chunks():
-    assert chunk_text("") == []
-    assert chunk_text("   \n\n  ") == []
+def _doc(sections: int, words_per_section: int):
+    blocks = []
+    for i in range(sections):
+        blocks.append(Block("heading", f"Section {i}", level=1))
+        blocks.append(Block("text", " ".join(f"s{i}w{j}" for j in range(words_per_section))))
+    return build_parsed(blocks)
 
 
-def test_short_text_is_one_chunk_with_exact_offsets():
-    text = "This is a short paragraph about authentication."
-    chunks = chunk_text(text)
+def _assert_exact(parsed, chunks):
+    for c in chunks:
+        assert c.text == parsed.text[c.char_start:c.char_end]
+
+
+def test_small_document_is_one_chunk():
+    parsed = _doc(3, 10)
+    chunks = chunk_document(parsed, document_id=DOC)
     assert len(chunks) == 1
-    assert chunks[0].char_start == 0
-    assert chunks[0].char_end == len(text)
-    assert chunks[0].text == text
+    assert chunks[0].char_start == 0 and chunks[0].char_end == len(parsed.text)
+    assert chunks[0].section_path == ["Section 0"]
 
 
-def test_offsets_are_exact_substrings_of_the_source():
-    """The provenance guarantee: every chunk's recorded span, sliced back out of the
-    original text, must equal the chunk's own text — this is what every downstream
-    citation depends on."""
-    text = (
-        "Paragraph one is about the login flow and session handling for the app.\n\n"
-        "Paragraph two covers rate limiting decisions made in the March architecture "
-        "review, including why we chose per-account over per-IP.\n\n"
-        "Paragraph three is a short note.\n\n"
-        "Paragraph four wraps up with a summary of next steps for the team."
-    )
-    chunks = chunk_text(text)
-    assert len(chunks) >= 1
+def test_chunks_start_on_section_boundaries_with_overlap():
+    parsed = _doc(6, 60)  # ~6 × 420 chars
+    chunks = chunk_document(parsed, document_id=DOC, max_tokens=150, overlap_tokens=30)
+    assert len(chunks) > 1
+    _assert_exact(parsed, chunks)
+    section_starts = {s.char_start for s in parsed.sections}
+    for prev, cur in zip(chunks, chunks[1:], strict=False):
+        # overlap: the chunk starts before the previous one ends ...
+        assert cur.char_start < prev.char_end
+        # ... and its core (after the overlap) begins at a section heading
+        core = parsed.text.find("Section", cur.char_start)
+        assert any(core <= s < cur.char_end for s in section_starts)
+        # overlap never starts mid-word
+        assert cur.char_start == 0 or parsed.text[cur.char_start - 1].isspace()
+
+
+def test_oversized_section_is_split_without_cutting_words():
+    parsed = _doc(1, 400)  # one ~2.8k-char section
+    chunks = chunk_document(parsed, document_id=DOC, max_tokens=100, overlap_tokens=0)
+    assert len(chunks) > 3
+    _assert_exact(parsed, chunks)
     for c in chunks:
-        assert text[c.char_start : c.char_end] == c.text
-    # every paragraph's own text must appear inside some chunk, unmodified
-    for para in ["login flow", "rate limiting decisions", "short note", "next steps"]:
-        assert any(para in c.text for c in chunks)
+        assert len(c.text) <= 400
+        assert not c.text[0].isspace() and not c.text[-1].isspace()
+        assert c.section_path == ["Section 0"]
+    covered = "".join(c.text + " " for c in chunks).split()
+    assert covered == parsed.text.split()  # nothing lost
 
 
-def test_paragraphs_pack_until_target_then_split():
-    """Many small paragraphs should combine into multi-paragraph chunks, not one chunk
-    per paragraph, up to ~TARGET_TOKENS — and a chunk boundary should trigger once a
-    chunk would otherwise exceed MAX_TOKENS."""
-    # ~40 tokens/paragraph * 30 paragraphs ~= 1200 tokens, comfortably forcing >1 chunk
-    # without needing any single paragraph to exceed MAX_TOKENS on its own.
-    paragraph = "The quick brown fox jumps over the lazy dog near the riverbank. " * 5
-    text = "\n\n".join(f"{paragraph}(#{i})" for i in range(30))
-
-    chunks = chunk_text(text)
-
-    assert len(chunks) > 1, "expected packing to still produce more than one chunk"
-    for c in chunks:
-        assert text[c.char_start : c.char_end] == c.text
-    # chunks are contiguous and in order, never overlapping, never skipping text
-    for prev, cur in zip(chunks, chunks[1:], strict=False):  # intentionally pairwise, len-1
-        assert cur.char_start >= prev.char_end
-
-
-def test_oversized_single_paragraph_becomes_its_own_chunk():
-    """A paragraph longer than MAX_TOKENS is never split mid-sentence — it becomes one
-    (oversized) chunk on its own."""
-    huge_paragraph = "word " * 2000  # far beyond MAX_TOKENS on its own
-    text = f"A short intro.\n\n{huge_paragraph}\n\nA short outro."
-
-    chunks = chunk_text(text)
-
-    assert any("word word word" in c.text for c in chunks)
-    for c in chunks:
-        assert text[c.char_start : c.char_end] == c.text
+def test_ids_are_deterministic_uuids_and_round_trip():
+    parsed = _doc(4, 80)
+    a = chunk_document(parsed, document_id=DOC, max_tokens=120, overlap_tokens=20)
+    b = chunk_document(parsed, document_id=DOC, max_tokens=120, overlap_tokens=20)
+    assert [c.chunk_id for c in a] == [c.chunk_id for c in b]
+    assert a[1].chunk_id == chunk_id_for(DOC, 1)
+    uuid.UUID(a[0].chunk_id)
+    assert ChunkSpec.from_dict(a[1].to_dict()) == a[1]
+    assert [c.ordinal for c in a] == list(range(len(a)))
