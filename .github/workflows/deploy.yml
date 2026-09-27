@@ -1,0 +1,57 @@
+# Redeploys both Cloud Run services on every push to main (see DEPLOY.md, "Deploying from GitHub").
+# One-time GCP setup (DEPLOY.md steps 0–9) must already be done: this only rebuilds and ships.
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity Federation — no service-account key stored in GitHub
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      # Env vars, secrets, volume and scaling flags from the first deploy are kept.
+      - name: Deploy backend
+        run: |
+          gcloud run deploy nexus-backend --source backend \
+            --project "$PROJECT_ID" --region "$REGION" --quiet
+
+  client:
+    needs: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build and deploy client
+        run: |
+          BACKEND_URL=$(gcloud run services describe nexus-backend \
+            --project "$PROJECT_ID" --region "$REGION" --format='value(status.url)')
+          IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/nexus/nexus-client:$GITHUB_SHA"
+          gcloud builds submit client --project "$PROJECT_ID" --region "$REGION" \
+            --config=client/cloudbuild.yaml --suppress-logs \
+            --substitutions=_IMAGE=$IMAGE,_BACKEND_URL=$BACKEND_URL
+          gcloud run deploy nexus-client --image "$IMAGE" \
+            --project "$PROJECT_ID" --region "$REGION" --quiet
